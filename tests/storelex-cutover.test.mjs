@@ -29,6 +29,42 @@ test('old callback buttons never invoke checkout and status is boss-only', async
   assert.match(replies.at(-1), /connected/);
 });
 
+test('recent orders is boss-only and never sends order values', async () => {
+  const handlers = {};
+  const bot = { start: () => {}, command: (name, fn) => { handlers[name] = fn; }, on: () => {} };
+  let calls = 0;
+  registerStorelexHandlers(bot, { recentOrders: async query => {
+    calls++;
+    assert.deepEqual(query, { minutes: 60, live: false });
+    return { orders: [{ address: 'PRIVATE ADDRESS', order_id: 'SECRET-ID' }] };
+  } }, '123');
+  const replies = [];
+  const ctx = { from: { id: 456 }, reply: async text => replies.push(text) };
+  await handlers.recent(ctx);
+  assert.equal(calls, 0);
+  ctx.from.id = 123;
+  await handlers.recent(ctx);
+  assert.equal(calls, 1);
+  assert.match(replies.at(-1), /1 order/);
+  assert.doesNotMatch(replies.at(-1), /PRIVATE ADDRESS|SECRET-ID/);
+});
+
+test('cartcheck is boss-only and never sends cart values', async () => {
+  const handlers = {};
+  const bot = { start: () => {}, command: (name, fn) => { handlers[name] = fn; }, on: () => {} };
+  let calls = 0;
+  registerStorelexHandlers(bot, { getCartState: async () => { calls++; return { cart: { address: 'PRIVATE ADDRESS' }, mobile: '9999999999' }; } }, '123');
+  const replies = [];
+  const ctx = { from: { id: 456 }, reply: async text => replies.push(text) };
+  await handlers.cartcheck(ctx);
+  assert.equal(calls, 0);
+  ctx.from.id = 123;
+  await handlers.cartcheck(ctx);
+  assert.equal(calls, 1);
+  assert.match(replies.at(-1), /cart, mobile/);
+  assert.doesNotMatch(replies.at(-1), /PRIVATE ADDRESS|9999999999/);
+});
+
 test('sessions only shows count to boss and never leaks credentials', async () => {
   const handlers = {};
   const bot = { start: () => {}, command: (name, fn) => { handlers[name] = fn; }, on: () => {} };

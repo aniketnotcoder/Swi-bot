@@ -29,6 +29,30 @@ export function registerStorelexHandlers(bot, client, bossId) {
       return ctx.reply(`Storelex sessions nahi mil paaye (${error.code || 'ERROR'}).`);
     }
   });
+  bot.command('recent', async ctx => {
+    if (!isBoss(ctx)) return ctx.reply('Is command ki access nahi hai.');
+    try {
+      // Storelex documents this as the caller's orders from the last hour.
+      const result = await client.recentOrders({ minutes: 60, live: false });
+      const list = Array.isArray(result) ? result : Array.isArray(result?.orders) ? result.orders : null;
+      return ctx.reply(list ? `Storelex par pichhle 60 minute ke ${list.length} order(s) mile. Private details yahan nahi bheje jaate.` : 'Storelex recent-orders response mila, format verify nahi hua; details nahi bheji.');
+    } catch (error) {
+      return ctx.reply(`Recent orders check fail (${error.code || 'ERROR'}).`);
+    }
+  });
+  bot.command('cartcheck', async ctx => {
+    if (!isBoss(ctx)) return ctx.reply('Is command ki access nahi hai.');
+    try {
+      const state = await client.getCartState();
+      // Only structural diagnostics: cart state may contain address, cookies or phone.
+      const keys = state && typeof state === 'object' && !Array.isArray(state)
+        ? Object.keys(state).filter(key => /^[a-zA-Z_]{1,40}$/.test(key)).slice(0, 30)
+        : [];
+      return ctx.reply(`Storelex cart/state read hua. Top-level fields: ${keys.length ? keys.join(', ') : '(unknown format)'}. Cart/checkout abhi band hain.`);
+    } catch (error) {
+      return ctx.reply(`Cart state check fail (${error.code || 'ERROR'}).`);
+    }
+  });
   // Explicitly catch stale inline keyboards from previous deployments; never execute them.
   bot.on('callback_query', async ctx => {
     await ctx.answerCbQuery('Purana action band hai. /start bhejein.').catch(() => {});
@@ -58,7 +82,7 @@ export async function main() {
   try {
     await bot.telegram.deleteMyCommands();
     await bot.telegram.setChatMenuButton({ type: 'commands' });
-    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }]);
+    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }]);
     await bot.launch();
     ready = true;
     console.log('Storelex-only Telegram bot active; checkout disabled.');
