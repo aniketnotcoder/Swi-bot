@@ -29,10 +29,28 @@ test('only one owner payment attempt per cart, generates provider QR', async () 
     const first = await pay(draft(), '349');
     assert.equal(first.png.subarray(0, 4).toString('hex'), '89504e47');
     assert.equal(await pay.status(draft()), 'PENDING_OR_UNKNOWN');
-    assert.equal((await pay.track(draft())).link, 'https://www.swiggy.com/track/order-1');
-    assert.match(await pay.receipt(draft()), /Order ID: o1/);
+    assert.equal((await pay.track(draft())).link, null);
+    await assert.rejects(pay.receipt(draft()), /Payment not confirmed/);
     await assert.rejects(pay(draft(), '349'));
     assert.equal(calls, 1);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('only paid order can expose tracking and confirmed order receipt', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'storelex-paid-'));
+  try {
+    let paid = false;
+    const pay = createOwnerPay({ dataDir: dir, client: {
+      placeOrder: async () => ({ success: true, method: 'upi', order_id: 'o1', txn_id: 't1', upi_url: 'upi://pay?pa=merchant%40upi&am=349&cu=INR' }),
+      paymentStatus: async () => ({ success: true, paid }),
+      orderStatus: async () => ({ success: true, status: 'Order received', tracking_link: 'https://www.swiggy.com/ofo/track/a' }),
+      orderDetail: async () => ({ success: true, order: { order_id: 'o1', order_status: 'Order received', restaurant_name: 'Cafe' } })
+    } });
+    await pay(draft(), '349');
+    assert.equal((await pay.track(draft())).link, null);
+    paid = true;
+    assert.match((await pay.track(draft())).link, /swiggy.com\/ofo\/track/);
+    assert.match(await pay.receipt(draft()), /Restaurant: Cafe/);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
