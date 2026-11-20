@@ -1,7 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { registerStorelexHandlers, classifyStorelexLinks } from '../storelex-bot.js';
+import { registerStorelexHandlers, classifyStorelexLinks, getStorelexMiniUrl } from '../storelex-bot.js';
+
+test('mini app URL resolves HTTPS from public host and rejects unsafe URL', () => {
+  assert.equal(getStorelexMiniUrl({ RENDER_EXTERNAL_URL: 'https://bot.onrender.com' }), 'https://bot.onrender.com/storelex');
+  assert.equal(getStorelexMiniUrl({ RENDER_SERVICE_NAME: 'ammi-abbu-ka-sacha-beta' }), 'https://ammi-abbu-ka-sacha-beta.onrender.com/storelex');
+  assert.equal(getStorelexMiniUrl({ PUBLIC_URL: 'http://insecure.test' }), '');
+  const source=fs.readFileSync(new URL('../storelex-bot.js', import.meta.url),'utf8');
+  assert.match(source, /setChatMenuButton\(\{ chatId: Number\(ownerId\), menuButton:/);
+});
+
+test('/start and /app give owner a persistent Web App button, not other users', async () => {
+  const handlers = {};
+  const bot = { start: fn => {handlers.start=fn;}, command: (name,fn) => {handlers[name]=fn;}, on: () => {} };
+  registerStorelexHandlers(bot, {}, '12345', { miniUrl: 'https://bot.onrender.com/storelex' });
+  const replies=[];
+  const ctx={from:{id:12345},chat:{type:'private'},reply:async (message,options)=>replies.push(options)};
+  await handlers.start(ctx);
+  assert.equal(replies[0].reply_markup.is_persistent, true);
+  assert.equal(replies[0].reply_markup.keyboard[0][0].web_app.url, 'https://bot.onrender.com/storelex');
+  await handlers.app(ctx);
+  assert.equal(replies.length, 2);
+  ctx.from.id=99999;
+  await handlers.start(ctx);
+  assert.equal(replies[2].reply_markup, undefined);
+});
 
 test('recognizes forwarded address and group cart links, not arbitrary URLs', () => {
   assert.deepEqual(classifyStorelexLinks('link:[https://swiggy.onelink.me/JgkQ/a](https://swiggy.onelink.me/JgkQ/a) https://swig.gy/gc/abc'), { address: 'https://swiggy.onelink.me/JgkQ/a', group: 'https://swig.gy/gc/abc' });

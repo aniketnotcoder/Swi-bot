@@ -22,7 +22,16 @@ export function classifyStorelexLinks(text) {
 }
 
 // Storelex-only cutover. Do not import index.js, bossbot, or local checkout modules.
-export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null } = {}) {
+export function getStorelexMiniUrl(env = process.env) {
+  const base = env.PUBLIC_URL || env.RENDER_EXTERNAL_URL || (env.RAILWAY_PUBLIC_DOMAIN ? `https://${env.RAILWAY_PUBLIC_DOMAIN}` : '') ||
+    (env.RENDER_SERVICE_NAME === 'ammi-abbu-ka-sacha-beta' ? 'https://ammi-abbu-ka-sacha-beta.onrender.com' : '');
+  try {
+    const url = new URL('/storelex', base);
+    return url.protocol === 'https:' && !url.username && !url.password ? url.toString() : '';
+  } catch { return ''; }
+}
+
+export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null, miniUrl = '' } = {}) {
   const bossIds = new Set(String(bossId).split(/[,;\s]+/).filter(id => /^\d+$/.test(id)));
   const isBoss = ctx => bossIds.has(String(ctx.from?.id || ''));
   const flow = createStorelexFlow(client);
@@ -46,14 +55,17 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
     return amount && bill?.nonce ? { reply_markup: { inline_keyboard: [[{ text: `Confirm bill & Pay ₹${amount}`, callback_data: `storelex_pay:${bill.nonce}` }]] } } : {};
   };
   const welcome = 'Storelex ready hai. Owner: Swiggy address aur group-cart link bhejein; bill khud aayega. /account <mobile> se ID badlein. Baaki users ke liye checkout abhi band hai.';
-  bot.start(ctx => ctx.reply(welcome));
+  const miniKeyboard = { reply_markup: { keyboard: [[{ text: '🍽 Open Swiggy Mini App', web_app: { url: miniUrl } }]], resize_keyboard: true, is_persistent: true } };
+  const sendWelcome = ctx => ctx.reply(welcome, miniUrl && isBoss(ctx) && ctx.chat?.type === 'private' ? miniKeyboard : {});
+  bot.start(sendWelcome);
+  bot.command('app', sendWelcome);
   bot.command('whoami', ctx => ctx.reply(`Aapki Telegram numeric ID: ${ctx.from?.id || 'unknown'}. Owner access BOSS_ID/BOSS_IDS se match hota hai.`));
   bot.command('voice', ctx => {
     if (ctx.chat?.type !== 'private') return ctx.reply('Voice sirf private chat mein hai.');
     const mood = toggleVoiceTone(ctx.chat.id);
     return ctx.reply(mood === 'stern' ? 'Voice reminder thoda firm ho gaya.' : 'Voice reminder normal ho gaya.');
   });
-  bot.command('help', ctx => ctx.reply(welcome));
+  bot.command('help', sendWelcome);
   bot.command('status', async ctx => {
     if (!isBoss(ctx)) return ctx.reply('Is command ki access nahi hai.');
     try {
@@ -212,7 +224,8 @@ export async function main() {
   const voiceRuntime = installTelegramVoiceReplies(bot.telegram, { isBoss: () => false });
   const { pay: ownerPay, reason: ownerPayReason } = configureOwnerPay(client);
   console.log(`Storelex owner Pay: ${ownerPayReason}`);
-  registerStorelexHandlers(bot, client, bossId, { ownerPay });
+  const miniUrl = getStorelexMiniUrl();
+  registerStorelexHandlers(bot, client, bossId, { ownerPay, miniUrl });
   // Fail closed before accepting Telegram updates if the configured remote API
   // cannot authenticate. Never log response bodies or credentials.
   const identity = await client.me();
@@ -232,10 +245,14 @@ export async function main() {
   if (server) await new Promise(resolve => server.listen(port, '0.0.0.0', resolve));
   try {
     await bot.telegram.deleteMyCommands();
-    const publicBase = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
-    const miniUrl = publicBase ? new URL('/storelex', publicBase).toString() : '';
-    await bot.telegram.setChatMenuButton(miniUrl ? { type: 'web_app', text: 'Storelex Mini App', web_app: { url: miniUrl } } : { type: 'commands' });
-    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'whoami', description: 'Your Telegram numeric ID' }, { command: 'voice', description: 'Toggle voice reminder tone' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }, { command: 'track', description: 'Owner order tracking' }, { command: 'receipt', description: 'Owner order details' }] : [])]);
+    await bot.telegram.setChatMenuButton({ menuButton: { type: 'commands' } });
+    if (miniUrl) {
+      for (const ownerId of String(bossId).split(/[,;\s]+/).filter(Boolean)) {
+        await bot.telegram.setChatMenuButton({ chatId: Number(ownerId), menuButton: { type: 'web_app', text: 'Open Swiggy Mini App', web_app: { url: miniUrl } } })
+          .catch(() => console.warn('[StorelexMini] Owner menu button unavailable; /app reply button still works.'));
+      }
+    }
+    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'app', description: 'Open Swiggy Mini App button' }, { command: 'whoami', description: 'Your Telegram numeric ID' }, { command: 'voice', description: 'Toggle voice reminder tone' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }, { command: 'track', description: 'Owner order tracking' }, { command: 'receipt', description: 'Owner order details' }] : [])]);
     await bot.launch();
     ready = true;
     console.log('Storelex-only Telegram bot active; checkout disabled.');
