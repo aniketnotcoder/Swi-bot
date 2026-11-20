@@ -5,6 +5,7 @@ import { createConfiguredStorelexClient } from './storelex-api.js';
 import { createStorelexFlow } from './storelex-flow.js';
 import { confirmedPayable } from './storelex-owner-pay.js';
 import { configureOwnerPay } from './storelex-pay-config.js';
+import { installTelegramVoiceReplies, toggleVoiceTone } from './voice-replies.js';
 import { extractSharedUrls } from './link-utils.js';
 
 export function classifyStorelexLinks(text) {
@@ -46,6 +47,11 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
   const welcome = 'Storelex ready hai. Owner: Swiggy address aur group-cart link bhejein; bill khud aayega. /account <mobile> se ID badlein. Baaki users ke liye checkout abhi band hai.';
   bot.start(ctx => ctx.reply(welcome));
   bot.command('whoami', ctx => ctx.reply(`Aapki Telegram numeric ID: ${ctx.from?.id || 'unknown'}. Owner access BOSS_ID/BOSS_IDS se match hota hai.`));
+  bot.command('voice', ctx => {
+    if (ctx.chat?.type !== 'private') return ctx.reply('Voice sirf private chat mein hai.');
+    const mood = toggleVoiceTone(ctx.chat.id);
+    return ctx.reply(mood === 'stern' ? 'Voice reminder thoda firm ho gaya.' : 'Voice reminder normal ho gaya.');
+  });
   bot.command('help', ctx => ctx.reply(welcome));
   bot.command('status', async ctx => {
     if (!isBoss(ctx)) return ctx.reply('Is command ki access nahi hai.');
@@ -200,6 +206,9 @@ export async function main() {
   if (!token || !String(bossId || '').split(/[,;\s]+/).filter(Boolean).every(id => /^\d+$/.test(id)) || !String(bossId || '').trim()) throw new Error('BOT_TOKEN and numeric BOSS_ID/BOSS_IDS are required.');
   const client = createConfiguredStorelexClient();
   const bot = new Telegraf(token);
+  // Legacy index.js is no longer started; explicitly install its existing
+  // prerecorded private-chat voice pack on this Storelex-only runtime too.
+  const voiceRuntime = installTelegramVoiceReplies(bot.telegram, { isBoss: () => false });
   const { pay: ownerPay, reason: ownerPayReason } = configureOwnerPay(client);
   console.log(`Storelex owner Pay: ${ownerPayReason}`);
   registerStorelexHandlers(bot, client, bossId, { ownerPay });
@@ -217,16 +226,18 @@ export async function main() {
   try {
     await bot.telegram.deleteMyCommands();
     await bot.telegram.setChatMenuButton({ type: 'commands' });
-    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'whoami', description: 'Your Telegram numeric ID' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }, { command: 'track', description: 'Owner order tracking' }, { command: 'receipt', description: 'Owner order details' }] : [])]);
+    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'whoami', description: 'Your Telegram numeric ID' }, { command: 'voice', description: 'Toggle voice reminder tone' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }, { command: 'track', description: 'Owner order tracking' }, { command: 'receipt', description: 'Owner order details' }] : [])]);
     await bot.launch();
     ready = true;
     console.log('Storelex-only Telegram bot active; checkout disabled.');
   } catch (error) {
     server?.close();
+    voiceRuntime.uninstall();
     throw error;
   }
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
     ready = false;
+    voiceRuntime.uninstall();
     bot.stop(signal);
     server?.close();
   });

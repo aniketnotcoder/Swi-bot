@@ -50,6 +50,17 @@ test('cart before address waits, unauthorized sender cannot invoke Storelex', as
   assert.deepEqual(calls.slice(-3), ['address', 'group', 'bill']);
 });
 
+test('Storelex runtime installs prerecorded voice pack and /voice remains available', async () => {
+  const source = fs.readFileSync(new URL('../storelex-bot.js', import.meta.url), 'utf8');
+  assert.match(source, /installTelegramVoiceReplies\(bot\.telegram/);
+  const handlers = {};
+  const bot = { start: () => {}, command: (name, fn) => { handlers[name] = fn; }, on: () => {} };
+  registerStorelexHandlers(bot, {}, '123');
+  const replies = [];
+  await handlers.voice({ chat: { type: 'private', id: 123 }, reply: text => replies.push(text) });
+  assert.match(replies[0], /Voice reminder/);
+});
+
 test('production start uses Storelex-only entrypoint', () => {
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url)));
   assert.equal(pkg.scripts.start, 'node storelex-bot.js');

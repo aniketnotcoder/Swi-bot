@@ -1,6 +1,6 @@
 # Storelex-only safe cutover
 
-`npm start` now boots `storelex-bot.js`, not the legacy `index.js`. Old Telegram buttons receive a disabled response, the old Mini App and checkout HTTP routes are not served, and no Storelex payment/order mutation is called unless the owner-only test gate is explicitly enabled. Legacy source and stored data are preserved for rollback; do not run `node index.js` or the separate `bossbot` simultaneously. Only one polling instance per Telegram bot token.
+`npm start` now boots `storelex-bot.js`, not the legacy `index.js`. The existing prerecorded Hindi/Hinglish voice pack is installed separately in this runtime for private owner/customer replies; `/voice` toggles the firm reminder. These clips are generic and never speak exact amounts, phone numbers, OTPs or URLs. Old Telegram buttons receive a disabled response, the old Mini App and checkout HTTP routes are not served, and no Storelex payment/order mutation is called unless the owner-only test gate is explicitly enabled. Legacy source and stored data are preserved for rollback; do not run `node index.js` or the separate `bossbot` simultaneously. Only one polling instance per Telegram bot token.
 
 Host secrets: `BOT_TOKEN`, numeric `BOSS_ID`, `STORELEX_USER_KEY`; optionally `STORELEX_API_BASE_URL` (default `https://storelex.store/swiggy_web/api`). Set `PORT` only if the host needs a health endpoint. Never paste keys into chat or Git. Rotate any key previously disclosed in chat. The old `BOSS_SECRET`, vault/UPI variables are not used by this runtime.
 
