@@ -24,6 +24,18 @@ test('boss flow passes verified address/cart to repricing without placing', asyn
   assert.equal(api.calls[2][1].items[0].quantity, 2);
 });
 
+test('auto-selects fresh available account and keeps explicit selection', async () => {
+  const api = client();
+  api.sessions = async () => ({ success: true, sessions: [
+    { mobile: '9876543210', is_done: true, orders_count: 2 },
+    { mobile: '9123456789', is_done: false, orders_count: 0 }
+  ] });
+  const flow = createStorelexFlow(api);
+  assert.equal(await flow.autoSelectAccount('boss'), '9123456789');
+  await flow.selectAccount('boss', '9876543210');
+  assert.equal(await flow.autoSelectAccount('boss'), '9876543210');
+});
+
 test('rejects foreign links, unavailable account and malformed import without repricing', async () => {
   const api = client();
   const flow = createStorelexFlow(api);

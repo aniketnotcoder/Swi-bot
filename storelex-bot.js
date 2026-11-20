@@ -3,12 +3,27 @@ import http from 'node:http';
 import { Telegraf } from 'telegraf';
 import { createConfiguredStorelexClient } from './storelex-api.js';
 import { createStorelexFlow } from './storelex-flow.js';
-import { createOwnerPay } from './storelex-owner-pay.js';
+import { createOwnerPay, confirmedPayable } from './storelex-owner-pay.js';
+import { extractSharedUrls } from './link-utils.js';
+
+export function classifyStorelexLinks(text) {
+  const result = { address: null, group: null };
+  for (const link of extractSharedUrls(text)) {
+    let url;
+    try { url = new URL(link); } catch { continue; }
+    const host = url.hostname.toLowerCase();
+    if ((host === 'swiggy.onelink.me' || (host === 'www.swiggy.com' && /\/ofo\/address\//i.test(url.pathname))) && !result.address) result.address = link;
+    if ((host === 'swig.gy' && /\/gc\//i.test(url.pathname)) || ((host === 'www.swiggy.com' || host === 'swiggy.com') && /group.?cart|\/gc\//i.test(url.pathname))) result.group ||= link;
+  }
+  return result;
+}
 
 // Storelex-only cutover. Do not import index.js, bossbot, or local checkout modules.
 export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null } = {}) {
-  const isBoss = ctx => String(ctx.from?.id || '') === String(bossId);
+  const bossIds = new Set(String(bossId).split(/[,;\s]+/).filter(id => /^\d+$/.test(id)));
+  const isBoss = ctx => bossIds.has(String(ctx.from?.id || ''));
   const flow = createStorelexFlow(client);
+  const pendingGroup = new Map();
   const flowCommand = (name, parse, action, successMessage) => bot.command(name, async ctx => {
     if (!isBoss(ctx) || ctx.chat?.type !== 'private') return ctx.reply('Is command ki access nahi hai.');
     try {
@@ -21,14 +36,20 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
     }
   });
   const argument = text => text.replace(/^\/\S+(?:@\w+)?\s*/, '').trim();
-  const welcome = 'Storelex mode active hai. Purane buttons, cart, payment aur order actions band hain. /status se API connection check karein.';
+  const billOptions = user => {
+    const bill = flow.paymentDraft(user)?.bill;
+    const amount = ownerPay && confirmedPayable(bill);
+    return amount && bill?.nonce ? { reply_markup: { inline_keyboard: [[{ text: `Confirm bill & Pay ₹${amount}`, callback_data: `storelex_pay:${bill.nonce}` }]] } } : {};
+  };
+  const welcome = 'Storelex ready hai. Owner: Swiggy address aur group-cart link bhejein; bill khud aayega. /account <mobile> se ID badlein. Baaki users ke liye checkout abhi band hai.';
   bot.start(ctx => ctx.reply(welcome));
+  bot.command('whoami', ctx => ctx.reply(`Aapki Telegram numeric ID: ${ctx.from?.id || 'unknown'}. Owner access BOSS_ID/BOSS_IDS se match hota hai.`));
   bot.command('help', ctx => ctx.reply(welcome));
   bot.command('status', async ctx => {
     if (!isBoss(ctx)) return ctx.reply('Is command ki access nahi hai.');
     try {
       await client.me();
-      return ctx.reply('Storelex API connected hai. Live cart, checkout aur payment abhi verify nahi hue hain; orders band hain.');
+      return ctx.reply(`Storelex API connected hai. Address/cart links bhejein; bill auto aayega. Owner Pay ${ownerPay ? 'available hai' : 'host par enable nahi hai'}. Baaki users ka checkout band hai.`);
     } catch (error) {
       return ctx.reply(`Storelex API verify nahi ho paayi (${error.code || 'ERROR'}). Orders band hain.`);
     }
@@ -68,19 +89,25 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
       return ctx.reply(`Cart state check fail (${error.code || 'ERROR'}).`);
     }
   });
-  flowCommand('account', argument, (user, mobile) => flow.selectAccount(user, mobile), () => 'Storelex account select ho gaya. Ab /address <Swiggy address link> bhejein.');
+  flowCommand('account', argument, (user, mobile) => { pendingGroup.delete(String(user)); return flow.selectAccount(user, mobile); }, () => 'Storelex account select ho gaya. Ab /address <Swiggy address link> bhejein.');
   flowCommand('address', argument, (user, link) => flow.address(user, link), () => 'Storelex address verify hua. Ab /group <Swiggy group cart link> bhejein.');
   flowCommand('group', argument, (user, link) => flow.importGroup(user, link), result => `Storelex cart import hua: ${result.itemCount} item(s), ${result.skipped} skipped. /bill se reprice check karein.`);
-  flowCommand('bill', () => '', user => flow.bill(user), result => `Storelex bill response: ${result.lineCount} lines.\n${result.lines.join('\n')}\n${ownerPay ? 'Owner test: amount ko Storelex UI se match karke /pay <rupees> bhejein. Yeh ek hi confirm+pay action hai; duplicate mat bhejna.' : 'Payment/order disabled.'}`);
+  bot.command('bill', async ctx => {
+    if (!isBoss(ctx) || ctx.chat?.type !== 'private') return ctx.reply('Is command ki access nahi hai.');
+    try {
+      const result = await flow.bill(ctx.from.id);
+      return ctx.reply(`Storelex bill:\n${result.lines.join('\n')}\n${ownerPay ? 'Amount check karke Confirm bill & Pay dabayein.' : 'Pay host par enable nahi hai.'}`, billOptions(ctx.from.id));
+    } catch { return ctx.reply('Storelex bill verify nahi hua. Address/cart check karein.'); }
+  });
+  const sendOwnerQr = async (ctx, amount) => {
+    try {
+      const result = await ownerPay(flow.paymentDraft(ctx.from.id), amount);
+      return await ctx.replyWithPhoto({ source: result.png }, { caption: 'Storelex UPI QR. Payment status /paystatus se dekhein. Dobara Pay na karein.' });
+    } catch { return ctx.reply('Pay incomplete/uncertain. Storelex order list mein check karein; same cart par Pay dobara na karein.'); }
+  };
   bot.command('pay', async ctx => {
     if (!isBoss(ctx) || ctx.chat?.type !== 'private' || !ownerPay) return ctx.reply('Owner-only payment test disabled.');
-    try {
-      const amount = argument(ctx.message?.text || '');
-      const result = await ownerPay(flow.paymentDraft(ctx.from.id), amount);
-      await ctx.replyWithPhoto({ source: result.png }, { caption: 'Storelex ka UPI QR. QR bhejne ka matlab payment confirmed nahi hai. Dobara /pay mat dabana; Storelex par payment/order status verify karein.' });
-    } catch (error) {
-      return ctx.reply('Pay attempt complete/uncertain ho sakta hai. Dubara /pay mat karein; Storelex order list mein reconcile karein. Input ya bill invalid ho to naya bill banayein.');
-    }
+    return sendOwnerQr(ctx, argument(ctx.message?.text || ''));
   });
   bot.command('paystatus', async ctx => {
     if (!isBoss(ctx) || ctx.chat?.type !== 'private' || !ownerPay) return ctx.reply('Owner-only payment test disabled.');
@@ -91,16 +118,50 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
   });
   // Explicitly catch stale inline keyboards from previous deployments; never execute them.
   bot.on('callback_query', async ctx => {
+    const data = String(ctx.callbackQuery?.data || '');
+    if (data.startsWith('storelex_pay:')) {
+      if (!isBoss(ctx) || ctx.chat?.type !== 'private' || !ownerPay) return ctx.answerCbQuery('Owner-only Pay unavailable.').catch(() => {});
+      const bill = flow.paymentDraft(ctx.from.id)?.bill;
+      if (!bill?.nonce || data !== `storelex_pay:${bill.nonce}` || !confirmedPayable(bill)) return ctx.answerCbQuery('Bill purana hai. /bill dobara bhejein.').catch(() => {});
+      await ctx.answerCbQuery('Storelex Pay request bhej raha hoon...').catch(() => {});
+      return sendOwnerQr(ctx, confirmedPayable(bill));
+    }
     await ctx.answerCbQuery('Purana action band hai. /start bhejein.').catch(() => {});
     await ctx.reply(welcome);
   });
-  bot.on('message', ctx => ctx.reply(welcome));
+  bot.on('message', async ctx => {
+    if (!isBoss(ctx) || ctx.chat?.type !== 'private') return ctx.reply(welcome);
+    const text = ctx.message?.text || ctx.message?.caption || '';
+    const links = classifyStorelexLinks(text);
+    if (!links.address && !links.group) return ctx.reply('Address ya group-cart link bhejein. /account <mobile> se ID badal sakte hain.');
+    try {
+      const mobile = await flow.autoSelectAccount(ctx.from.id);
+      const mask = `••••${mobile.slice(-4)}`;
+      if (links.group && !links.address && !flow.paymentDraft(ctx.from.id)?.address) {
+        pendingGroup.set(String(ctx.from.id), links.group);
+        return ctx.reply(`Group-cart link mila (ID ${mask}). Address link bhejein; phir bill khud aa jayega.`);
+      }
+      if (links.address) {
+        await flow.address(ctx.from.id, links.address);
+        await ctx.reply(`Storelex address parse ho gaya (ID ${mask}). ${links.group || pendingGroup.has(String(ctx.from.id)) ? 'Cart import kar raha hoon…' : 'Ab group-cart link bhejein.'}`);
+      }
+      const groupLink = links.group || (links.address ? pendingGroup.get(String(ctx.from.id)) : null);
+      if (groupLink) {
+        const imported = await flow.importGroup(ctx.from.id, groupLink);
+        pendingGroup.delete(String(ctx.from.id));
+        const billed = await flow.bill(ctx.from.id);
+        await ctx.reply(`Storelex cart: ${imported.itemCount} item(s), ${imported.skipped} skipped (ID ${mask}).\nBill:\n${billed.lines.join('\n')}\n${ownerPay ? 'Amount check karke Confirm bill & Pay dabayein.' : 'Pay host par enable nahi hai.'}`, billOptions(ctx.from.id));
+      }
+    } catch (error) {
+      return ctx.reply(`Storelex address/cart/bill abhi verify nahi hua (${error.code || 'CHECK_FAILED'}). /account <mobile> se ID select karke dobara try karein.`);
+    }
+  });
 }
 
 export async function main() {
   const token = process.env.BOT_TOKEN;
-  const bossId = process.env.BOSS_ID;
-  if (!token || !/^\d+$/.test(String(bossId || ''))) throw new Error('BOT_TOKEN and numeric BOSS_ID are required.');
+  const bossId = process.env.BOSS_IDS || process.env.BOSS_ID;
+  if (!token || !String(bossId || '').split(/[,;\s]+/).filter(Boolean).every(id => /^\d+$/.test(id)) || !String(bossId || '').trim()) throw new Error('BOT_TOKEN and numeric BOSS_ID/BOSS_IDS are required.');
   const client = createConfiguredStorelexClient();
   const bot = new Telegraf(token);
   const ownerPay = process.env.STORELEX_OWNER_PAY_TEST === '1'
@@ -120,7 +181,7 @@ export async function main() {
   try {
     await bot.telegram.deleteMyCommands();
     await bot.telegram.setChatMenuButton({ type: 'commands' });
-    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }] : [])]);
+    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'whoami', description: 'Your Telegram numeric ID' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }] : [])]);
     await bot.launch();
     ready = true;
     console.log('Storelex-only Telegram bot active; checkout disabled.');

@@ -1,7 +1,54 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { registerStorelexHandlers } from '../storelex-bot.js';
+import { registerStorelexHandlers, classifyStorelexLinks } from '../storelex-bot.js';
+
+test('recognizes forwarded address and group cart links, not arbitrary URLs', () => {
+  assert.deepEqual(classifyStorelexLinks('link:[https://swiggy.onelink.me/JgkQ/a](https://swiggy.onelink.me/JgkQ/a) https://swig.gy/gc/abc'), { address: 'https://swiggy.onelink.me/JgkQ/a', group: 'https://swig.gy/gc/abc' });
+  assert.deepEqual(classifyStorelexLinks('https://evil.example/abc'), { address: null, group: null });
+});
+
+test('boss can send natural address then cart and receive bill with pay button', async () => {
+  const handlers = {};
+  const bot = { start: () => {}, command: (name, fn) => { handlers[name] = fn; }, on: (name, fn) => { handlers[name] = fn; } };
+  const calls = [];
+  const client = {
+    sessions: async () => ({ success: true, sessions: [{ mobile: '9876543210', is_done: false, orders_count: 0 }] }),
+    resolveAddressByLink: async body => { calls.push('address'); return { success: true, address: { id: 'a1', lat: 26.85, lng: 80.95 } }; },
+    importGroupCart: async () => { calls.push('group'); return { success: true, restaurant: { id: 'r1' }, items: [{ id: 'i1', quantity: 1 }], skipped: [] }; },
+    repriceCart: async () => { calls.push('bill'); return { success: true, cart_id: 'c1', cart_value: 30000, bill: {}, bill_lines: [{ label: 'To Pay', value: '₹349' }] }; }
+  };
+  registerStorelexHandlers(bot, client, '123,456', { ownerPay: async () => {} });
+  const replies = [];
+  const ctx = { from: { id: 456 }, chat: { type: 'private' }, message: { text: 'https://swiggy.onelink.me/JgkQ/a' }, reply: async (text, opts) => { replies.push({ text, opts }); } };
+  await handlers.message(ctx);
+  ctx.message.text = 'https://swig.gy/gc/abc';
+  await handlers.message(ctx);
+  assert.deepEqual(calls, ['address', 'group', 'bill']);
+  assert.match(replies.at(-1).text, /₹349/);
+  assert.match(replies.at(-1).opts.reply_markup.inline_keyboard[0][0].text, /Pay ₹349/);
+});
+
+test('cart before address waits, unauthorized sender cannot invoke Storelex', async () => {
+  const handlers = {};
+  const bot = { start: () => {}, command: () => {}, on: (name, fn) => { handlers[name] = fn; } };
+  const calls = [];
+  registerStorelexHandlers(bot, {
+    sessions: async () => { calls.push('sessions'); return { success: true, sessions: [{ mobile: '9876543210' }] }; },
+    resolveAddressByLink: async () => { calls.push('address'); return { success: true, address: { id: 'a', lat: 26, lng: 80 } }; },
+    importGroupCart: async () => { calls.push('group'); return { success: true, restaurant: { id: 'r' }, items: [{ id: 'i', quantity: 1 }] }; },
+    repriceCart: async () => { calls.push('bill'); return { success: true, cart_id: 'c', cart_value: 10000, bill: {}, bill_lines: [{ label: 'To Pay', value: '₹100' }] }; }
+  }, '123');
+  const ctx = { from: { id: 999 }, chat: { type: 'private' }, message: { text: 'https://swig.gy/gc/abc' }, reply: async () => {} };
+  await handlers.message(ctx);
+  assert.deepEqual(calls, []);
+  ctx.from.id = 123;
+  await handlers.message(ctx);
+  assert.deepEqual(calls, ['sessions', 'sessions']);
+  ctx.message.text = 'https://swiggy.onelink.me/JgkQ/a';
+  await handlers.message(ctx);
+  assert.deepEqual(calls.slice(-3), ['address', 'group', 'bill']);
+});
 
 test('production start uses Storelex-only entrypoint', () => {
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url)));
@@ -22,7 +69,7 @@ test('old callback buttons never invoke checkout and status is boss-only', async
   await handlers.callback_query(ctx);
   await handlers.status(ctx);
   assert.equal(calls, 0);
-  assert.match(replies[0], /band hain/);
+  assert.match(replies[0], /band hai/);
   ctx.from.id = 123;
   await handlers.status(ctx);
   assert.equal(calls, 1);
