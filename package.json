@@ -5,7 +5,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
+    "start": "node storelex-bot.js",
     "test": "node test_comprehensive_audit_suite.mjs",
     "test:bill-regression": "node --test tests/bill-checkout-regression.test.mjs",
     "test:round19": "node test_v108_deployproof_tracking_autopay.mjs",

@@ -1,0 +1,9 @@
+# Storelex-only safe cutover
+
+`npm start` now boots `storelex-bot.js`, not the legacy `index.js`. Old Telegram buttons receive a disabled response, the old Mini App and checkout HTTP routes are not served, and no Storelex payment/order mutation is called. Legacy source and stored data are preserved for rollback; do not run `node index.js` or the separate `bossbot` simultaneously. Only one polling instance per Telegram bot token.
+
+Host secrets: `BOT_TOKEN`, numeric `BOSS_ID`, `STORELEX_USER_KEY`; optionally `STORELEX_API_BASE_URL` (default `https://storelex.store/swiggy_web/api`). Set `PORT` only if the host needs a health endpoint. Never paste keys into chat or Git. Rotate any key previously disclosed in chat. The old `BOSS_SECRET`, vault/UPI variables are not used by this runtime.
+
+Startup makes an authenticated, read-only `/me` request and fails closed if authentication is unavailable. After deploy, boss sends `/status` for another `/me` check, or `/sessions` for a read-only count (never sends session details). A connected response proves only the API credential and endpoint, NOT cart/import/checkout functionality. The new flow remains disabled pending redacted response examples and safe integration tests. Health JSON intentionally reports `ordersEnabled:false`. Old messages may retain visible inline buttons, but pressing them cannot run old actions through this process.
+
+Deploy a Docker worker/service with `npm start`; Vercel serverless functions are not compatible with this polling process. To avoid misleading live traffic, do not deploy until the rotated Storelex key is configured and a single bot instance is selected. Existing persistent data is not deleted.
