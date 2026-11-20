@@ -29,6 +29,22 @@ test('old callback buttons never invoke checkout and status is boss-only', async
   assert.match(replies.at(-1), /connected/);
 });
 
+test('pay is restricted to boss private chat and disabled without explicit gate', async () => {
+  const handlers = {};
+  const bot = { start: () => {}, command: (name, fn) => { handlers[name] = fn; }, on: () => {} };
+  let calls = 0;
+  registerStorelexHandlers(bot, {}, '123', { ownerPay: async () => { calls++; return { png: Buffer.from('x') }; } });
+  const ctx = { from: { id: 456 }, chat: { type: 'private' }, message: { text: '/pay 349' }, reply: async () => {} };
+  await handlers.pay(ctx);
+  ctx.from.id = 123; ctx.chat.type = 'group';
+  await handlers.pay(ctx);
+  assert.equal(calls, 0);
+  registerStorelexHandlers(bot, {}, '123');
+  ctx.chat.type = 'private';
+  await handlers.pay(ctx);
+  assert.equal(calls, 0);
+});
+
 test('recent orders is boss-only and never sends order values', async () => {
   const handlers = {};
   const bot = { start: () => {}, command: (name, fn) => { handlers[name] = fn; }, on: () => {} };

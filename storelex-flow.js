@@ -20,7 +20,7 @@ export function createStorelexFlow(client) {
       if (!success(response) || !Array.isArray(response.sessions)) throw new Error('Sessions cannot be verified');
       const account = response.sessions.find(item => String(item.mobile) === mobile);
       if (!account || account.is_expired || account.status === 'expired') throw new Error('Account unavailable or expired');
-      drafts.set(String(userId), { mobile });
+      drafts.set(String(userId), { mobile, accountName: typeof account.name === 'string' ? account.name : '' });
       return { selected: true };
     },
     async address(userId, rawLink) {
@@ -30,7 +30,7 @@ export function createStorelexFlow(client) {
       const response = await client.resolveAddressByLink({ mobile: draft.mobile, link });
       const address = response?.address;
       if (!success(response) || !id(address?.id) || address?.lat == null || address?.lng == null || !finiteCoord(Number(address.lat), -90, 90) || !finiteCoord(Number(address.lng), -180, 180)) throw new Error('Address not verified by Storelex');
-      draft.address = { id: id(address.id), lat: Number(address.lat), lng: Number(address.lng) };
+      draft.address = { id: id(address.id), lat: Number(address.lat), lng: Number(address.lng), raw: address };
       draft.imported = null;
       draft.bill = null;
       return { verified: true };
@@ -50,8 +50,11 @@ export function createStorelexFlow(client) {
       if (!draft?.imported || !draft.address) throw new Error('Import cart and verify address first');
       const response = await client.repriceCart({ mobile: draft.mobile, restaurant: draft.imported.restaurant, items: draft.imported.items, address_id: draft.address.id, lat: draft.address.lat, lng: draft.address.lng, incognito: true, plan_id: '' });
       if (!success(response) || !id(response.cart_id) || !response.bill || !Array.isArray(response.bill_lines) || !response.bill_lines.length) throw new Error('Bill not verified by Storelex');
-      draft.bill = { cartId: id(response.cart_id) };
-      return { verified: true, lineCount: response.bill_lines.length, cartIdAvailable: true };
+      draft.bill = { cartId: id(response.cart_id), cartValue: response.cart_value, lines: response.bill_lines, coupon: response.coupon, at: Date.now() };
+      return { verified: true, lineCount: response.bill_lines.length, cartIdAvailable: true, lines: response.bill_lines.map(line => `${String(line.label || '').slice(0, 50)}: ${String(line.value ?? '').slice(0, 40)}`).slice(0, 15) };
+    },
+    paymentDraft(userId) {
+      return drafts.get(String(userId));
     }
   };
 }

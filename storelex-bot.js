@@ -3,9 +3,10 @@ import http from 'node:http';
 import { Telegraf } from 'telegraf';
 import { createConfiguredStorelexClient } from './storelex-api.js';
 import { createStorelexFlow } from './storelex-flow.js';
+import { createOwnerPay } from './storelex-owner-pay.js';
 
 // Storelex-only cutover. Do not import index.js, bossbot, or local checkout modules.
-export function registerStorelexHandlers(bot, client, bossId) {
+export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null } = {}) {
   const isBoss = ctx => String(ctx.from?.id || '') === String(bossId);
   const flow = createStorelexFlow(client);
   const flowCommand = (name, parse, action, successMessage) => bot.command(name, async ctx => {
@@ -70,7 +71,24 @@ export function registerStorelexHandlers(bot, client, bossId) {
   flowCommand('account', argument, (user, mobile) => flow.selectAccount(user, mobile), () => 'Storelex account select ho gaya. Ab /address <Swiggy address link> bhejein.');
   flowCommand('address', argument, (user, link) => flow.address(user, link), () => 'Storelex address verify hua. Ab /group <Swiggy group cart link> bhejein.');
   flowCommand('group', argument, (user, link) => flow.importGroup(user, link), result => `Storelex cart import hua: ${result.itemCount} item(s), ${result.skipped} skipped. /bill se reprice check karein.`);
-  flowCommand('bill', () => '', user => flow.bill(user), result => `Storelex bill verified: ${result.lineCount} bill lines. Exact payable amount mapping abhi unverified hai; payment/order disabled.`);
+  flowCommand('bill', () => '', user => flow.bill(user), result => `Storelex bill response: ${result.lineCount} lines.\n${result.lines.join('\n')}\n${ownerPay ? 'Owner test: amount ko Storelex UI se match karke /pay <rupees> bhejein. Yeh ek hi confirm+pay action hai; duplicate mat bhejna.' : 'Payment/order disabled.'}`);
+  bot.command('pay', async ctx => {
+    if (!isBoss(ctx) || ctx.chat?.type !== 'private' || !ownerPay) return ctx.reply('Owner-only payment test disabled.');
+    try {
+      const amount = argument(ctx.message?.text || '');
+      const result = await ownerPay(flow.paymentDraft(ctx.from.id), amount);
+      await ctx.replyWithPhoto({ source: result.png }, { caption: 'Storelex ka UPI QR. QR bhejne ka matlab payment confirmed nahi hai. Dobara /pay mat dabana; Storelex par payment/order status verify karein.' });
+    } catch (error) {
+      return ctx.reply('Pay attempt complete/uncertain ho sakta hai. Dubara /pay mat karein; Storelex order list mein reconcile karein. Input ya bill invalid ho to naya bill banayein.');
+    }
+  });
+  bot.command('paystatus', async ctx => {
+    if (!isBoss(ctx) || ctx.chat?.type !== 'private' || !ownerPay) return ctx.reply('Owner-only payment test disabled.');
+    try {
+      const status = await ownerPay.status(flow.paymentDraft(ctx.from.id));
+      return ctx.reply(`Storelex payment status: ${status}. ${status === 'PAID' ? 'Provider ne paid confirm kiya.' : 'Paid assume mat karein; Storelex par check karein.'}`);
+    } catch { return ctx.reply('Payment status verify nahi hua. Storelex par manually check karein; /pay retry mat karein.'); }
+  });
   // Explicitly catch stale inline keyboards from previous deployments; never execute them.
   bot.on('callback_query', async ctx => {
     await ctx.answerCbQuery('Purana action band hai. /start bhejein.').catch(() => {});
@@ -85,7 +103,9 @@ export async function main() {
   if (!token || !/^\d+$/.test(String(bossId || ''))) throw new Error('BOT_TOKEN and numeric BOSS_ID are required.');
   const client = createConfiguredStorelexClient();
   const bot = new Telegraf(token);
-  registerStorelexHandlers(bot, client, bossId);
+  const ownerPay = process.env.STORELEX_OWNER_PAY_TEST === '1'
+    ? createOwnerPay({ client, dataDir: process.env.DATA_DIR }) : null;
+  registerStorelexHandlers(bot, client, bossId, { ownerPay });
   // Fail closed before accepting Telegram updates if the configured remote API
   // cannot authenticate. Never log response bodies or credentials.
   await client.me();
@@ -94,13 +114,13 @@ export async function main() {
   let ready = false;
   const server = port > 0 ? http.createServer((req, res) => {
     res.writeHead(ready ? 200 : 503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: ready ? 'storelex-only' : 'starting', ordersEnabled: false }));
+    res.end(JSON.stringify({ status: ready ? 'storelex-only' : 'starting', ordersEnabled: false, ownerTestEnabled: Boolean(ownerPay) }));
   }) : null;
   if (server) await new Promise(resolve => server.listen(port, '0.0.0.0', resolve));
   try {
     await bot.telegram.deleteMyCommands();
     await bot.telegram.setChatMenuButton({ type: 'commands' });
-    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }]);
+    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }] : [])]);
     await bot.launch();
     ready = true;
     console.log('Storelex-only Telegram bot active; checkout disabled.');
