@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
-import { createConfiguredStorelexClient } from './storelex-api.js';
+import { createConfiguredStorelexClient, createStorelexClient } from './storelex-api.js';
 import { openStorelexScratch } from './storelex-mini-db.js';
 
 const html = new URL('./storelex-mini.html', import.meta.url);
@@ -30,7 +30,7 @@ const coordinates = state => state.lat != null && state.lng != null && Number.is
 const allowedMethods = Object.freeze({
   sessions: 'GET', me: 'GET', maintenance: 'GET', profile: 'GET', addresses: 'GET', locationSearch: 'GET', locationDetails: 'GET', locationReverse: 'GET',
   searchRestaurants: 'GET', orders: 'GET', orderDetail: 'GET', getCartState: 'GET',
-  exportAccount: 'POST', accountLoginKey: 'POST', checkFreeCash: 'POST', removeAllAccounts: 'POST', addAddress: 'POST', addAddressByLink: 'POST', deleteAddress: 'DELETE',
+  exportAccount: 'POST', accountLoginKey: 'POST', checkFreeCash: 'POST', addAddress: 'POST', addAddressByLink: 'POST', deleteAddress: 'DELETE',
   searchMenu: 'POST', searchMenuItems: 'POST', searchOutlets: 'POST', repriceCart: 'POST', setCartState: 'PUT', addAddressToAccount: 'POST', importGroupCart: 'POST',
   coupons: 'POST', bestCoupon: 'POST', applyCoupon: 'POST', removeCoupon: 'POST', paymentOptions: 'POST', oneStatus: 'POST',
   placeOrder: 'POST', paymentStatus: 'POST', confirmPayment: 'POST', orderStatus: 'POST', rateOrder: 'POST', paylog: 'POST'
@@ -38,9 +38,26 @@ const allowedMethods = Object.freeze({
 export const MINI_ACTIONS = Object.keys(allowedMethods);
 
 // The API key is only read on the server. The browser never sees it.
-export function createStorelexMiniService({ client, scratch, token, bossIds }) {
+export function createStorelexMiniService({ client, scratch, token, bossIds, createClient = createStorelexClient }) {
   const owners = new Set(String(bossIds || '').split(/[,;\s]+/).filter(Boolean));
   const checks = new Map(); // repriced bill in this process, never trusted from browser
+  const webSessions = new Map(); // random cookie -> per-key session (never persisted)
+  const loginAttempts = new Map();
+  const cookieName = 'storelex_session';
+  const webSession = req => {
+    const sid = String(req.headers.cookie || '').split(';').map(part => part.trim()).find(part => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
+    const session = webSessions.get(sid);
+    if (!session) return null;
+    if (session.expires < Date.now()) { webSessions.delete(sid); return null; }
+    return { sid, ...session };
+  };
+  const csrfValid = (req, session) => session && String(req.headers['x-csrf-token'] || '') === session.csrf &&
+    (!req.headers.origin || req.headers.origin === `https://${req.headers.host}` || req.headers.origin === `http://${req.headers.host}`);
+  const readBody = async (req, limit = 1_000_000) => {
+    let raw = '';
+    for await (const chunk of req) { raw += chunk; if (raw.length > limit) error('Request too large', 413); }
+    try { return JSON.parse(raw); } catch { error('Invalid JSON'); }
+  };
   async function guard(mobile) {
     const [me, maintenance, profile] = await Promise.all([client.me(), client.maintenance(), client.profile(mobile)]);
     if (me?.success !== true || !Number.isFinite(Number(me.balance)) || !Number.isFinite(Number(me.fee)) || Number(me.balance) < Number(me.fee)) error('Wallet balance below order fee', 409);
@@ -61,14 +78,6 @@ export function createStorelexMiniService({ client, scratch, token, bossIds }) {
     if (name === 'locationSearch') return client.locationSearch(id(body.query).slice(0, 120));
     if (name === 'locationDetails') return client.locationDetails(id(body.place_id).slice(0, 120));
     if (name === 'locationReverse') return client.locationReverse({ lat: body.lat, lng: body.lng, mobile: mobile || '' });
-    if (name === 'removeAllAccounts') {
-      if (body.confirm !== 'REMOVE ALL') error('Confirmation required');
-      if (!mobile) error('Select an account first');
-      await guard(mobile);
-      const result = await client.removeAllAccounts();
-      if (result?.success === true) await scratch.select(userId, '');
-      return result;
-    }
     if (!mobileOk(mobile)) error('Select an account first');
     if (name === 'profile') return client.profile(mobile);
     if (name === 'addresses') {
@@ -176,6 +185,29 @@ export function createStorelexMiniService({ client, scratch, token, bossIds }) {
     }
     error('Action disabled', 403);
   }
+  async function perform(userId, payload) {
+      if (payload.action === 'selectAccount') {
+        const chosen = String(payload.body?.mobile || '');
+        const sessions = await client.sessions();
+        if (!Array.isArray(sessions?.sessions) || !sessions.sessions.some(s => String(s.mobile) === chosen && !s.is_expired)) error('Account unavailable');
+        await guard(chosen);
+        await scratch.select(userId, chosen);
+        return { success: true, state: scratch.get(userId) };
+      }
+      if (payload.action === 'selectAddress') {
+        const state = scratch.get(userId);
+        if (!mobileOk(state.mobile)) error('Select account first');
+        await guard(state.mobile);
+        const addresses = await client.addresses(state.mobile);
+        const listed = (addresses?.account_addresses || addresses?.addresses || []).find(a => !a.is_global && String(a.id) === String(payload.body?.address_id));
+        if (!listed || !Number.isFinite(Number(listed.lat)) || !Number.isFinite(Number(listed.lng))) error('Address not in selected account');
+        await scratch.address(userId, String(listed.id), Number(listed.lat), Number(listed.lng));
+        return { success: true, state: scratch.get(userId) };
+      }
+      if (payload.action === 'state') return { success: true, state: scratch.get(userId) };
+      const result = await action(userId, payload.action, payload.body && typeof payload.body === 'object' ? payload.body : {});
+      return result;
+  }
   async function handle(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     if (!url.pathname.startsWith('/storelex')) return false;
@@ -187,36 +219,50 @@ export function createStorelexMiniService({ client, scratch, token, bossIds }) {
         res.writeHead(200, { 'Content-Type': url.pathname.endsWith('.js') ? 'text/javascript' : url.pathname.endsWith('.css') ? 'text/css' : 'text/html', 'Cache-Control': 'no-store' });
         res.end(contents); return true;
       }
+      if (url.pathname === '/storelex/web/login' && req.method === 'POST') {
+        const ip = req.socket?.remoteAddress || 'unknown';
+        const rec = loginAttempts.get(ip) || { count: 0, until: Date.now() + 15 * 60_000 };
+        if (rec.until < Date.now()) { rec.count = 0; rec.until = Date.now() + 15 * 60_000; }
+        if (++rec.count > 5) error('Too many login attempts', 429);
+        loginAttempts.set(ip, rec);
+        const input = await readBody(req, 4096);
+        const key = String(input.access_key || '').trim();
+        if (!/^(SWG|TNG)-(?:[A-Za-z0-9]{4}-){2}[A-Za-z0-9]{4}$/.test(key)) error('Invalid access key', 401);
+        const ownClient = createClient({ baseUrl: client.baseUrl, userKey: key, timeoutMs: 60_000 });
+        const me = await ownClient.me();
+        if (me?.success !== true) error('Access key rejected', 401);
+        for (const [key, session] of webSessions) if (session.expires < Date.now()) webSessions.delete(key);
+        if (webSessions.size >= 500) error('Session capacity reached', 503);
+        const sid = crypto.randomBytes(32).toString('hex');
+        const csrf = crypto.randomBytes(32).toString('hex');
+        const uid = `web:${crypto.createHash('sha256').update(key).digest('hex')}`;
+        const service = createStorelexMiniService({ client: ownClient, scratch, token, bossIds: '', createClient });
+        webSessions.set(sid, { uid, csrf, service, expires: Date.now() + 12 * 60 * 60_000 });
+        loginAttempts.delete(ip);
+        res.setHeader('Set-Cookie', `${cookieName}=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${process.env.NODE_ENV === 'production' || req.socket?.encrypted ? '; Secure' : ''}`);
+        return send(200, { success: true, csrf }), true;
+      }
+      if (url.pathname === '/storelex/web/session' && req.method === 'GET') {
+        const session = webSession(req);
+        return send(session ? 200 : 401, session ? { success: true, csrf: session.csrf } : { error: 'Login required' }), true;
+      }
+      if (url.pathname === '/storelex/web/logout' && req.method === 'POST') {
+        const session = webSession(req);
+        if (!csrfValid(req, session)) error('Session or CSRF invalid', 403);
+        webSessions.delete(session.sid);
+        res.setHeader('Set-Cookie', `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+        return send(200, { success: true }), true;
+      }
       if (req.method !== 'POST' || url.pathname !== '/storelex/api') return send(404, { error: 'Not found' }), true;
+      const payload = await readBody(req);
       const userId = verifyTelegramInitData(String(req.headers['x-telegram-init-data'] || ''), token);
-      if (!userId || !owners.has(userId)) return send(403, { error: 'Telegram owner authentication required' }), true;
-      let raw = '';
-      for await (const chunk of req) { raw += chunk; if (raw.length > 1_000_000) error('Request too large', 413); }
-      const payload = JSON.parse(raw);
-      if (payload.action === 'selectAccount') {
-        const chosen = String(payload.body?.mobile || '');
-        const sessions = await client.sessions();
-        if (!Array.isArray(sessions?.sessions) || !sessions.sessions.some(s => String(s.mobile) === chosen && !s.is_expired)) error('Account unavailable');
-        await guard(chosen);
-        await scratch.select(userId, chosen);
-        return send(200, { success: true, state: scratch.get(userId) }), true;
-      }
-      if (payload.action === 'selectAddress') {
-        const state = scratch.get(userId);
-        if (!mobileOk(state.mobile)) error('Select account first');
-        await guard(state.mobile);
-        const addresses = await client.addresses(state.mobile);
-        const listed = (addresses?.account_addresses || addresses?.addresses || []).find(a => !a.is_global && String(a.id) === String(payload.body?.address_id));
-        if (!listed || !Number.isFinite(Number(listed.lat)) || !Number.isFinite(Number(listed.lng))) error('Address not in selected account');
-        await scratch.address(userId, String(listed.id), Number(listed.lat), Number(listed.lng));
-        return send(200, { success: true, state: scratch.get(userId) }), true;
-      }
-      if (payload.action === 'state') return send(200, { success: true, state: scratch.get(userId) }), true;
-      const result = await action(userId, payload.action, payload.body && typeof payload.body === 'object' ? payload.body : {});
-      return send(200, result), true;
+      if (userId && owners.has(userId)) return send(200, await perform(userId, payload)), true;
+      const session = webSession(req);
+      if (!csrfValid(req, session)) return send(403, { error: 'Telegram owner or web session required' }), true;
+      return send(200, await session.service.perform(session.uid, payload)), true;
     } catch (e) { send(e.status || 502, { error: e.status ? e.message : 'Storelex request failed', code: e.code || 'STORELEX_ERROR' }); return true; }
   }
-  return { handle, action };
+  return { handle, action, perform };
 }
 
 function finalAmount(lines) {

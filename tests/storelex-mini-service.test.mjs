@@ -20,7 +20,7 @@ test('frontend is black-only and never embeds an access key or disabled operatio
   const ui = await fs.readFile(new URL('../storelex-mini.js', import.meta.url), 'utf8');
   assert.match(css, /--bg:#000000/);
   assert.doesNotMatch(css, /light mode|gradient/i);
-  assert.doesNotMatch(ui, /SWG-[A-Z0-9]+|mark_used|mark_fresh|orders_recent|send_otp/);
+  assert.doesNotMatch(ui, /SWG-[A-Z0-9]+|mark_used|mark_fresh|orders_recent|send_otp|removeAllAccounts|removeall|Remove all accounts/);
 });
 
 test('Telegram initData signature is verified, tampering rejected', () => {
@@ -44,6 +44,30 @@ test('SQLite retains per-user mobile/cart/address and one-attempt placement acro
     assert.equal(db.get('2').mobile,undefined);
     db.close();
   } finally {await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('standalone key login uses HttpOnly cookie, CSRF and per-key account isolation', async () => {
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'storelex-web-'));
+  const scratch=await openStorelexScratch(path.join(dir,'s.sqlite'));
+  const owner={baseUrl:'https://api.example.test',me:async()=>({success:true})};
+  const own={me:async()=>({success:true,balance:9,fee:1,is_owner:false}),maintenance:async()=>({maintenance:false}),profile:async()=>({success:true}),sessions:async()=>({success:true,sessions:[{mobile:'9876543210'}]})};
+  const service=createStorelexMiniService({client:owner,scratch,token:'token:ABC',bossIds:'123',createClient:({userKey})=>{assert.match(userKey,/^SWG-/);return own;}});
+  async function request(url,method,body,headers={}){
+    const req={url,method,headers,socket:{remoteAddress:'127.0.0.1'},async *[Symbol.asyncIterator](){if(body)yield Buffer.from(JSON.stringify(body));}};
+    const res={headers:{},setHeader(name,val){this.headers[name]=val;},writeHead(code){this.status=code;},end(data){this.body=JSON.parse(data);}};
+    await service.handle(req,res);return res;
+  }
+  try{
+    const bad=await request('/storelex/web/login','POST',{access_key:'nope'});assert.equal(bad.status,401);
+    const login=await request('/storelex/web/login','POST',{access_key:'SWG-ABCD-EFGH-IJKL'});
+    assert.equal(login.status,200);assert.match(login.headers['Set-Cookie'],/HttpOnly; SameSite=Strict/);
+    const cookie=login.headers['Set-Cookie'].split(';')[0];
+    assert.equal((await request('/storelex/api','POST',{action:'sessions'},{cookie})).status,403);
+    const authorized=await request('/storelex/api','POST',{action:'sessions'},{cookie,'x-csrf-token':login.body.csrf});
+    assert.equal(authorized.status,200);assert.equal(authorized.body.sessions[0].mobile,'9876543210');
+    assert.equal((await request('/storelex/api','POST',{action:'removeAllAccounts'},{cookie,'x-csrf-token':login.body.csrf})).status,403);
+    assert.equal((await request('/storelex/web/session','GET',null,{cookie})).body.csrf,login.body.csrf);
+  }finally{scratch.close();await fs.rm(dir,{recursive:true,force:true});}
 });
 
 test('cart checkout uses selected account, single placement and paid-only confirmation', async () => {
@@ -120,6 +144,10 @@ test('owner gate, disabled routes, profile/wallet/maintenance guards, mobile sco
     assert.equal((await request(999,'sessions')).status,403);
     assert.equal((await request(12345,'sendOtp')).status,403);
     assert.equal((await request(12345,'ordersRecent')).status,403);
+    assert.equal((await request(12345,'removeAllAccounts',{confirm:'REMOVE ALL'})).status,403);
+    assert.equal((await request(12345,'removeAccount',{mobile:'9876543210'})).status,403);
+    assert.equal((await request(12345,'startAccountDeletion',{mobile:'9876543210'})).status,403);
+    assert.equal((await request(12345,'confirmAccountDeletion',{mobile:'9876543210',otp:'123456'})).status,403);
     assert.equal((await request(12345,'selectAccount',{mobile:'9876543210'})).status,200);
     const addresses=await request(12345,'addresses');
     assert.equal(addresses.body.addresses.length,1);

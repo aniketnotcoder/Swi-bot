@@ -1,6 +1,6 @@
 # Storelex Telegram Mini App
 
-A separate, black-only Storelex UI at `/storelex` served by the same Node process as `npm start`. Open using Telegram's Web App menu, not a browser login screen. The browser never receives `STORELEX_USER_KEY`; its requests include Telegram `initData`, validated server-side. Only `BOSS_ID` / `BOSS_IDS` can access the shared Storelex key. Do not embed a shared access key in frontend JavaScript or put it into a URL; a key previously posted in chat must be rotated. No OTP, JSON-import or access-key login UI exists.
+A Storelex UI at `/storelex` served by the same Node process as `npm start`. In Telegram, only `BOSS_ID` / `BOSS_IDS` can access the shared server-held Storelex key; Telegram `initData` is verified server-side. In a standalone browser, users can sign in with their own Storelex key: the server validates it against `/me`, keeps it in process memory for a 12-hour session, and issues an HttpOnly cookie with CSRF protection. Do not embed the shared key in frontend JavaScript or a URL; rotate any key previously posted in chat. The UI now has optional light/dark themes. OTP and JSON-import UI are not implemented. Standalone sessions are not durable or ready for multi-instance deployment.
 
 ## Render startup diagnostics
 
@@ -18,7 +18,7 @@ At boot the server authenticates with `GET /me` and aborts if `success !== true`
 
 ## Enabled UI
 
-- **Accounts:** `/sessions` selection, `/profile/{mobile}` guard, `/accounts/{mobile}/export`, free-cash check, key-login-only login key, confirmed `/accounts/remove_all`.
+- **Accounts:** `/sessions` selection, `/profile/{mobile}` guard, authorized `/accounts/{mobile}/export`, free-cash check, key-login-only login key. Account removal is forbidden for all roles in this application.
 - **Addresses:** selected mobile's account addresses, manual add, link add, delete with `is_global`, account sync, location search/details/reverse.
 - **Explore:** restaurant search, menu and menu search, outlets, item/cart-context import. Optional variant/add-on selection JSON is only sent if explicitly supplied from the displayed menu metadata.
 - **Cart:** server backup, group import, and `/search/cart` repricing after each add/remove (when no items remain, cart clears in the browser). Prices from the API are paise and are converted only in display.
@@ -28,7 +28,7 @@ At boot the server authenticates with `GET /me` and aborts if `success !== true`
 
 ## Deliberately disabled
 
-`mark_used`, `mark_fresh`, single-account remove, Swiggy account delete/start/confirm, mobile OTP login, JSON import, batch/diya/claimed offers/breakfast/night tools, other accounts' address lists, and bulk `/orders_recent`. These routes are absent from the server allowlist, not just hidden in the UI.
+`mark_used`, `mark_fresh`, all account removal (`DELETE /accounts/{mobile}`, `POST /accounts/remove_all`), Swiggy account delete/start/confirm, mobile OTP login, JSON import, batch/diya/claimed offers/breakfast/night tools, other accounts' address lists, and bulk `/orders_recent`. These routes are absent from the server allowlist, not just hidden in the UI.
 
 ## Theme tokens
 
