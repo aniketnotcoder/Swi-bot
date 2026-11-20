@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { registerStorelexHandlers, classifyStorelexLinks, getStorelexMiniUrl } from '../storelex-bot.js';
+import { registerStorelexHandlers, classifyStorelexLinks, getStorelexMiniUrl, verifyTelegramBot } from '../storelex-bot.js';
+
+test('Telegram 401 is diagnosed as BOT_TOKEN failure, not Storelex key failure', async () => {
+  assert.deepEqual(await verifyTelegramBot({ getMe: async () => ({ id: 12 }) }), { id: 12 });
+  await assert.rejects(verifyTelegramBot({ getMe: async () => { throw new Error('401: Unauthorized'); } }), error => /Telegram rejected BOT_TOKEN/.test(error.message) && !error.message.includes('SWG-'));
+  await assert.rejects(verifyTelegramBot({ getMe: async () => { throw new Error('network error'); } }), /connectivity/);
+});
 
 test('mini app URL resolves HTTPS from public host and rejects unsafe URL', () => {
   assert.equal(getStorelexMiniUrl({ RENDER_EXTERNAL_URL: 'https://bot.onrender.com' }), 'https://bot.onrender.com/storelex');

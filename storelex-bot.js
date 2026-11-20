@@ -22,6 +22,20 @@ export function classifyStorelexLinks(text) {
 }
 
 // Storelex-only cutover. Do not import index.js, bossbot, or local checkout modules.
+export async function verifyTelegramBot(telegram) {
+  try {
+    const identity = await telegram.getMe();
+    if (!identity?.id) throw new Error('Telegram getMe returned no bot identity');
+    return identity;
+  } catch (error) {
+    const status = error?.response?.error_code || error?.code;
+    if (status === 401 || /\b401\b|Unauthorized/i.test(String(error?.message || error?.description || ''))) {
+      throw new Error('Telegram rejected BOT_TOKEN (401). Update BOT_TOKEN on the live Render service from @BotFather and redeploy; STORELEX_USER_KEY is a different credential.');
+    }
+    throw new Error('Telegram getMe failed. Check Telegram connectivity and BOT_TOKEN on the live service.');
+  }
+}
+
 export function getStorelexMiniUrl(env = process.env) {
   const base = env.PUBLIC_URL || env.RENDER_EXTERNAL_URL || (env.RAILWAY_PUBLIC_DOMAIN ? `https://${env.RAILWAY_PUBLIC_DOMAIN}` : '') ||
     (env.RENDER_SERVICE_NAME === 'ammi-abbu-ka-sacha-beta' ? 'https://ammi-abbu-ka-sacha-beta.onrender.com' : '');
@@ -224,12 +238,16 @@ export async function main() {
   const voiceRuntime = installTelegramVoiceReplies(bot.telegram, { isBoss: () => false });
   const { pay: ownerPay, reason: ownerPayReason } = configureOwnerPay(client);
   console.log(`Storelex owner Pay: ${ownerPayReason}`);
+  if (ownerPayReason.includes('local journal')) console.warn('[StorelexPay] /app/data is not a dedicated mounted disk; placement journal may be lost on redeploy. Add a persistent disk mounted at /app/data to the live Render service.');
   const miniUrl = getStorelexMiniUrl();
   registerStorelexHandlers(bot, client, bossId, { ownerPay, miniUrl });
   // Fail closed before accepting Telegram updates if the configured remote API
   // cannot authenticate. Never log response bodies or credentials.
   const identity = await client.me();
   if (identity?.success !== true) throw new Error('Storelex key validation failed');
+  // Storelex /me succeeded; the 401 seen later during Telegram setup is a
+  // *different* credential. Diagnose it before opening a listening socket.
+  await verifyTelegramBot(bot.telegram);
   // Do not claim readiness based on a successful TCP bind alone.
   const port = Number(process.env.PORT || (process.env.RENDER ? 10000 : 0));
   const dataDir = process.env.DATA_DIR || (process.env.RENDER ? '/app/data' : new URL('./data/', import.meta.url).pathname);
@@ -259,6 +277,9 @@ export async function main() {
   } catch (error) {
     server?.close();
     voiceRuntime.uninstall();
+    if (error?.response?.error_code === 401 || /\b401\b|Unauthorized/i.test(String(error?.message || ''))) {
+      throw new Error('Telegram BOT_TOKEN rejected during bot setup (401). Replace it on the live Render service and redeploy.');
+    }
     throw error;
   }
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
