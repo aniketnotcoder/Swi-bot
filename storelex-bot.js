@@ -7,6 +7,7 @@ import { confirmedPayable } from './storelex-owner-pay.js';
 import { configureOwnerPay } from './storelex-pay-config.js';
 import { installTelegramVoiceReplies, toggleVoiceTone } from './voice-replies.js';
 import { extractSharedUrls } from './link-utils.js';
+import { createConfiguredMiniService } from './storelex-mini-service.js';
 
 export function classifyStorelexLinks(text) {
   const result = { address: null, group: null };
@@ -214,18 +215,26 @@ export async function main() {
   registerStorelexHandlers(bot, client, bossId, { ownerPay });
   // Fail closed before accepting Telegram updates if the configured remote API
   // cannot authenticate. Never log response bodies or credentials.
-  await client.me();
+  const identity = await client.me();
+  if (identity?.success !== true) throw new Error('Storelex key validation failed');
   // Do not claim readiness based on a successful TCP bind alone.
-  const port = Number(process.env.PORT || 0);
+  const port = Number(process.env.PORT || (process.env.RENDER ? 10000 : 0));
+  const dataDir = process.env.DATA_DIR || (process.env.RENDER ? '/app/data' : new URL('./data/', import.meta.url).pathname);
+  const mini = port > 0 ? await createConfiguredMiniService({ token, bossIds: bossId, dataDir }) : null;
   let ready = false;
-  const server = port > 0 ? http.createServer((req, res) => {
-    res.writeHead(ready ? 200 : 503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: ready ? 'storelex-only' : 'starting', ordersEnabled: false, ownerTestEnabled: Boolean(ownerPay) }));
+  const server = port > 0 ? http.createServer(async (req, res) => {
+    try {
+      if (await mini.handle(req, res)) return;
+      res.writeHead(ready ? 200 : 503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: ready ? 'storelex-only' : 'starting', ordersEnabled: false, ownerTestEnabled: Boolean(ownerPay), miniApp: '/storelex' }));
+    } catch { res.writeHead(500); res.end('Error'); }
   }) : null;
   if (server) await new Promise(resolve => server.listen(port, '0.0.0.0', resolve));
   try {
     await bot.telegram.deleteMyCommands();
-    await bot.telegram.setChatMenuButton({ type: 'commands' });
+    const publicBase = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
+    const miniUrl = publicBase ? new URL('/storelex', publicBase).toString() : '';
+    await bot.telegram.setChatMenuButton(miniUrl ? { type: 'web_app', text: 'Storelex Mini App', web_app: { url: miniUrl } } : { type: 'commands' });
     await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'whoami', description: 'Your Telegram numeric ID' }, { command: 'voice', description: 'Toggle voice reminder tone' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }, { command: 'track', description: 'Owner order tracking' }, { command: 'receipt', description: 'Owner order details' }] : [])]);
     await bot.launch();
     ready = true;
