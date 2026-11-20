@@ -24,6 +24,36 @@ test('boss flow passes verified address/cart to repricing without placing', asyn
   assert.equal(api.calls[2][1].items[0].quantity, 2);
 });
 
+test('best coupon is applied before bill and only claimed after provider reread', async () => {
+  const api = client();
+  let reads = 0;
+  api.repriceCart = async () => {
+    reads++;
+    return { success: true, cart_id: 'c1', cart_value: 25000, bill: {},
+      bill_lines: reads === 1 ? [{ label: 'To Pay', value: '₹300' }] : [{ key: 'coupon_discount', label: 'Coupon', value: '-₹50', negative: true }, { label: 'To Pay', value: '₹250' }],
+      coupon: reads === 1 ? null : { code: 'SAVE50', valid: true, discount: 50 } };
+  };
+  api.bestCoupon = async body => { assert.equal(body.cart_id, 'c1'); return { success: true }; };
+  const flow = createStorelexFlow(api);
+  await flow.selectAccount('boss', '9876543210');
+  await flow.address('boss', 'https://swiggy.onelink.me/a');
+  await flow.importGroup('boss', 'https://swig.gy/gc/a');
+  const result = await flow.bill('boss');
+  assert.equal(reads, 2);
+  assert.match(result.couponStatus, /SAVE50.*verified/);
+  assert.match(result.lines.at(-1), /₹250/);
+});
+
+test('coupon endpoint success alone never claims discount', async () => {
+  const api = client();
+  api.bestCoupon = async () => ({ success: true, coupon: { code: 'FAKE', valid: true, discount: 50 } });
+  const flow = createStorelexFlow(api);
+  await flow.selectAccount('boss', '9876543210');
+  await flow.address('boss', 'https://swiggy.onelink.me/a');
+  await flow.importGroup('boss', 'https://swig.gy/gc/a');
+  assert.match((await flow.bill('boss')).couponStatus, /verified nahi/);
+});
+
 test('auto-selects fresh available account and keeps explicit selection', async () => {
   const api = client();
   api.sessions = async () => ({ success: true, sessions: [

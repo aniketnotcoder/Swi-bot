@@ -22,6 +22,22 @@ export function createOwnerPay({ client, dataDir }) {
     if (response?.success !== true) throw new Error('Payment status unverified');
     return response.paid === true ? 'PAID' : response.failed === true || response.order_failed === true ? 'FAILED' : 'PENDING_OR_UNKNOWN';
   }
+  async function tracking(draft) {
+    if (!draft?.mobile || !draft?.bill?.cartId) throw new Error('No selected cart');
+    const record = JSON.parse(await fs.readFile(journalFile(draft), 'utf8'));
+    if (record.state !== 'QR_ISSUED' || !record.orderId) throw new Error('Order not confirmed');
+    const response = await client.orderStatus({ order_id: record.orderId });
+    if (response?.success !== true) throw new Error('Tracking unavailable');
+    let link = null;
+    if (typeof response.tracking_link === 'string') {
+      try {
+        const url = new URL(response.tracking_link);
+        if (url.protocol === 'https:' && !url.username && !url.password &&
+          ['swiggy.com', 'swig.gy'].some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) link = url.toString();
+      } catch { /* no verified link */ }
+    }
+    return { status: String(response.status || 'Unknown').slice(0, 80), link, final: response.final === true };
+  }
   async function pay(draft, enteredAmount) {
     const amount = Number(enteredAmount);
     if (!/^\d+(?:\.\d{1,2})?$/.test(String(enteredAmount)) || !Number.isFinite(amount) || amount <= 0 || amount > 10000) throw new Error('Invalid amount');
@@ -58,5 +74,6 @@ export function createOwnerPay({ client, dataDir }) {
     return result;
   }
   pay.status = paymentStatus;
+  pay.track = tracking;
   return pay;
 }
