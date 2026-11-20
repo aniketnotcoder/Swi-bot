@@ -66,7 +66,7 @@ export function createStorelexClient({
       }
     }
 
-    const headers = { Accept: 'application/json' };
+    const headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
     if (auth) headers['x-user-key'] = key;
     const hasBody = body !== undefined;
     if (hasBody) headers['Content-Type'] = 'application/json';
@@ -166,9 +166,9 @@ export function createStorelexClient({
     paymentOptions: body => post('/checkout/payment_options', body),
     oneStatus: mobile => post('/checkout/one/status', { mobile }),
     placeOrder: (body, options = {}) => post('/checkout/place', body, options),
-    paymentStatus: (body, options = {}) => post('/checkout/payment_status', body, { timeoutMs: 20_000, ...options }),
-    confirmPayment: (body, options = {}) => post('/checkout/confirm', body, { timeoutMs: 20_000, ...options }),
-    orderStatus: body => post('/checkout/order_status', body, { timeoutMs: 20_000 }),
+    paymentStatus: (body, options = {}) => post('/checkout/payment_status', body, options),
+    confirmPayment: (body, options = {}) => post('/checkout/confirm', body, options),
+    orderStatus: body => post('/checkout/order_status', body),
     orders: mobile => get(`/orders/${encodePathSegment(mobile)}`),
     recentOrders: query => get('/orders_recent', query),
     orderDetail: (mobile, orderId) => get(`/order_detail/${encodePathSegment(mobile)}/${encodePathSegment(orderId)}`),
