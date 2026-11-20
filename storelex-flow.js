@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 // Boss-only preparation flow. No checkout/place calls: a pricing response is not
 // evidence that placing an order is safe, and retries can create duplicate orders.
 const mobilePattern = /^\d{10}$/;
@@ -14,6 +16,18 @@ export function createStorelexFlow(client) {
   // Ephemeral by design; never persist personal addresses or sessions.
   const drafts = new Map();
   return {
+    async autoSelectAccount(userId) {
+      const existing = drafts.get(String(userId));
+      if (existing?.mobile) return existing.mobile;
+      const response = await client.sessions();
+      if (!success(response) || !Array.isArray(response.sessions)) throw new Error('Sessions cannot be verified');
+      const candidates = response.sessions.filter(item => mobilePattern.test(String(item.mobile || '')) && !item.is_expired && item.status !== 'expired');
+      if (!candidates.length) throw new Error('No usable Storelex account');
+      // Prefer a fresh account; the boss can override explicitly with /account.
+      const chosen = candidates.find(item => !item.is_done && Number(item.orders_count || 0) === 0) || candidates[0];
+      await this.selectAccount(userId, String(chosen.mobile));
+      return String(chosen.mobile);
+    },
     async selectAccount(userId, mobile) {
       if (!mobilePattern.test(mobile)) throw new Error('10-digit mobile required');
       const response = await client.sessions();
@@ -50,7 +64,7 @@ export function createStorelexFlow(client) {
       if (!draft?.imported || !draft.address) throw new Error('Import cart and verify address first');
       const response = await client.repriceCart({ mobile: draft.mobile, restaurant: draft.imported.restaurant, items: draft.imported.items, address_id: draft.address.id, lat: draft.address.lat, lng: draft.address.lng, incognito: true, plan_id: '' });
       if (!success(response) || !id(response.cart_id) || !response.bill || !Array.isArray(response.bill_lines) || !response.bill_lines.length) throw new Error('Bill not verified by Storelex');
-      draft.bill = { cartId: id(response.cart_id), cartValue: response.cart_value, lines: response.bill_lines, coupon: response.coupon, at: Date.now() };
+      draft.bill = { cartId: id(response.cart_id), cartValue: response.cart_value, lines: response.bill_lines, coupon: response.coupon, at: Date.now(), nonce: crypto.randomBytes(12).toString('hex') };
       return { verified: true, lineCount: response.bill_lines.length, cartIdAvailable: true, lines: response.bill_lines.map(line => `${String(line.label || '').slice(0, 50)}: ${String(line.value ?? '').slice(0, 40)}`).slice(0, 15) };
     },
     paymentDraft(userId) {

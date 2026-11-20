@@ -3,6 +3,12 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { providerUpiQr } from './storelex-payment.js';
 
+export function confirmedPayable(bill) {
+  const rows = bill?.lines?.filter(row => /^(?:to pay|total payable|grand total)$/i.test(String(row.label || '').trim())) || [];
+  const matches = rows.map(row => /^₹\s*(\d+(?:\.\d{1,2})?)$/.exec(String(row.value || '').trim())).filter(Boolean);
+  return matches.length === 1 ? matches[0][1] : null;
+}
+
 // One attempt per cart across restarts. An uncertain placement must be manually
 // reconciled at Storelex; never blindly retry a payment-creating request.
 export function createOwnerPay({ client, dataDir }) {
@@ -24,9 +30,8 @@ export function createOwnerPay({ client, dataDir }) {
     if (typeof draft.bill.cartValue !== 'number' || !Number.isFinite(draft.bill.cartValue) || draft.bill.cartValue <= 0 || !Array.isArray(draft.bill.lines) || !draft.bill.lines.length) throw new Error('Incomplete bill');
     // Require a human-readable final payable row, not cart_value (which can
     // exclude delivery/taxes). Never infer payable from a subtotal.
-    const payableRows = draft.bill.lines.filter(row => /^(?:to pay|total payable|grand total)$/i.test(String(row.label || '').trim()));
-    const matches = payableRows.map(row => /^₹\s*(\d+(?:\.\d{1,2})?)$/.exec(String(row.value || '').trim())).filter(Boolean);
-    if (matches.length !== 1 || Number(matches[0][1]) !== amount) throw new Error('Payable does not match the confirmed bill');
+    const payable = confirmedPayable(draft.bill);
+    if (!payable || Number(payable) !== amount) throw new Error('Payable does not match the confirmed bill');
     const dir = path.join(dataDir, 'storelex-placement-journal');
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
     const file = journalFile(draft);
