@@ -16,9 +16,11 @@ export function isDedicatedDataMount(dataDir, mountInfo) {
 
 export function configureOwnerPay(client, env = process.env, readMounts = () => fs.readFileSync('/proc/self/mountinfo', 'utf8')) {
   if (env.STORELEX_OWNER_PAY_TEST === '0') return { pay: null, reason: 'disabled by STORELEX_OWNER_PAY_TEST=0' };
-  const dir = env.DATA_DIR || (env.RENDER || env.RENDER_SERVICE_NAME ? '/app/data' : '');
+  // The Docker image already provides /app/data; use it without requiring any
+  // new host variable. When no volume is mounted this journal is best-effort
+  // across redeploys, never a claim of durable idempotency.
+  const dir = env.DATA_DIR || (fs.existsSync('/app/data') ? '/app/data' : path.resolve('data'));
   let mounted = false;
   try { mounted = isDedicatedDataMount(dir, readMounts()); } catch { /* no volume proof */ }
-  if (!mounted) return { pay: null, reason: 'persistent DATA_DIR volume not mounted' };
-  return { pay: createOwnerPay({ client, dataDir: dir }), reason: 'owner-only enabled' };
+  return { pay: createOwnerPay({ client, dataDir: dir }), reason: mounted ? 'owner-only, persistent journal' : 'owner-only, local journal (redeploy can lose it)' };
 }

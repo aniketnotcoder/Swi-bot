@@ -2,10 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { providerUpiQr } from './storelex-payment.js';
+import { formatStorelexReceipt } from './storelex-receipt.js';
 
 export function confirmedPayable(bill) {
   const rows = bill?.lines?.filter(row => /^(?:to pay|total payable|grand total)$/i.test(String(row.label || '').trim())) || [];
-  const matches = rows.map(row => /^₹\s*(\d+(?:\.\d{1,2})?)$/.exec(String(row.value || '').trim())).filter(Boolean);
+  const matches = rows.map(row => /^(?:₹\s*)?(\d+(?:\.\d{1,2})?)$/.exec(String(row.value ?? '').trim())).filter(Boolean);
   return matches.length === 1 ? matches[0][1] : null;
 }
 
@@ -38,6 +39,13 @@ export function createOwnerPay({ client, dataDir }) {
     }
     return { status: String(response.status || 'Unknown').slice(0, 80), link, final: response.final === true };
   }
+  async function receipt(draft) {
+    if (!draft?.mobile || !draft?.bill?.cartId) throw new Error('No selected cart');
+    const record = JSON.parse(await fs.readFile(journalFile(draft), 'utf8'));
+    if (record.state !== 'QR_ISSUED' || !record.orderId) throw new Error('Order not confirmed');
+    const detail = await client.orderDetail(draft.mobile, record.orderId);
+    return formatStorelexReceipt(detail, draft.mobile);
+  }
   async function pay(draft, enteredAmount) {
     const amount = Number(enteredAmount);
     if (!/^\d+(?:\.\d{1,2})?$/.test(String(enteredAmount)) || !Number.isFinite(amount) || amount <= 0 || amount > 10000) throw new Error('Invalid amount');
@@ -48,6 +56,16 @@ export function createOwnerPay({ client, dataDir }) {
     // exclude delivery/taxes). Never infer payable from a subtotal.
     const payable = confirmedPayable(draft.bill);
     if (!payable || Number(payable) !== amount) throw new Error('Payable does not match the confirmed bill');
+    // Extra remote reconciliation when a local journal was lost on redeploy.
+    // This does not replace an atomic persistent journal: Storelex may omit
+    // unfinished/unconfirmed orders from its recent-orders feed.
+    if (typeof client.recentOrders === 'function') {
+      const recent = await client.recentOrders({ minutes: 60, live: false });
+      const orders = Array.isArray(recent) ? recent : recent?.orders;
+      if (Array.isArray(orders) && orders.some(order => String(order.cart_id || '') === draft.bill.cartId)) {
+        throw new Error('Cart already appears in Storelex recent orders');
+      }
+    }
     const dir = path.join(dataDir, 'storelex-placement-journal');
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
     const file = journalFile(draft);
@@ -75,5 +93,6 @@ export function createOwnerPay({ client, dataDir }) {
   }
   pay.status = paymentStatus;
   pay.track = tracking;
+  pay.receipt = receipt;
   return pay;
 }

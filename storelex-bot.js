@@ -123,6 +123,7 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
       const draft = flow.paymentDraft(ctx.from.id);
       const result = await ownerPay(draft, amount);
       const sent = await ctx.replyWithPhoto({ source: result.png }, { caption: 'Storelex UPI QR. /paystatus se payment, /track se order status dekhein. Tracking link aate hi bot bhejega.' });
+      try { await ctx.reply(await ownerPay.receipt(draft)); } catch { await ctx.reply('Order detail Storelex par abhi pending hai. /receipt se dobara check karein.'); }
       watchTracking(ctx, draft);
       return sent;
     } catch { return ctx.reply('Pay incomplete/uncertain. Storelex order list mein check karein; same cart par Pay dobara na karein.'); }
@@ -137,6 +138,11 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
       const status = await ownerPay.status(flow.paymentDraft(ctx.from.id));
       return ctx.reply(`Storelex payment status: ${status}. ${status === 'PAID' ? 'Provider ne paid confirm kiya.' : 'Paid assume mat karein; Storelex par check karein.'}`);
     } catch { return ctx.reply('Payment status verify nahi hua. Storelex par manually check karein; /pay retry mat karein.'); }
+  });
+  bot.command('receipt', async ctx => {
+    if (!isBoss(ctx) || ctx.chat?.type !== 'private' || !ownerPay) return ctx.reply('Owner-only receipt unavailable.');
+    try { return ctx.reply(await ownerPay.receipt(flow.paymentDraft(ctx.from.id))); }
+    catch { return ctx.reply('Storelex order detail abhi available nahi hai. /recent aur /track check karein.'); }
   });
   bot.command('track', async ctx => {
     if (!isBoss(ctx) || ctx.chat?.type !== 'private' || !ownerPay) return ctx.reply('Owner-only tracking unavailable.');
@@ -210,7 +216,7 @@ export async function main() {
   try {
     await bot.telegram.deleteMyCommands();
     await bot.telegram.setChatMenuButton({ type: 'commands' });
-    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'whoami', description: 'Your Telegram numeric ID' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }, { command: 'track', description: 'Owner order tracking' }] : [])]);
+    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'whoami', description: 'Your Telegram numeric ID' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }, { command: 'track', description: 'Owner order tracking' }, { command: 'receipt', description: 'Owner order details' }] : [])]);
     await bot.launch();
     ready = true;
     console.log('Storelex-only Telegram bot active; checkout disabled.');
