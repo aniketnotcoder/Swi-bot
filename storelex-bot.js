@@ -3,7 +3,8 @@ import http from 'node:http';
 import { Telegraf } from 'telegraf';
 import { createConfiguredStorelexClient } from './storelex-api.js';
 import { createStorelexFlow } from './storelex-flow.js';
-import { createOwnerPay, confirmedPayable } from './storelex-owner-pay.js';
+import { confirmedPayable } from './storelex-owner-pay.js';
+import { configureOwnerPay } from './storelex-pay-config.js';
 import { extractSharedUrls } from './link-utils.js';
 
 export function classifyStorelexLinks(text) {
@@ -36,6 +37,7 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
     }
   });
   const argument = text => text.replace(/^\/\S+(?:@\w+)?\s*/, '').trim();
+  const payHint = user => !ownerPay ? 'Pay host par enable nahi hai (persistent DATA_DIR mount chahiye).' : confirmedPayable(flow.paymentDraft(user)?.bill) ? 'Amount check karke Confirm bill & Pay dabayein.' : 'Bill me final To Pay ₹ amount nahi mila; button nahi dikhaya.';
   const billOptions = user => {
     const bill = flow.paymentDraft(user)?.bill;
     const amount = ownerPay && confirmedPayable(bill);
@@ -96,7 +98,7 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
     if (!isBoss(ctx) || ctx.chat?.type !== 'private') return ctx.reply('Is command ki access nahi hai.');
     try {
       const result = await flow.bill(ctx.from.id);
-      return ctx.reply(`Storelex bill:\n${result.lines.join('\n')}\n${ownerPay ? 'Amount check karke Confirm bill & Pay dabayein.' : 'Pay host par enable nahi hai.'}`, billOptions(ctx.from.id));
+      return ctx.reply(`Storelex bill:\n${result.lines.join('\n')}\n${payHint(ctx.from.id)}`, billOptions(ctx.from.id));
     } catch { return ctx.reply('Storelex bill verify nahi hua. Address/cart check karein.'); }
   });
   const sendOwnerQr = async (ctx, amount) => {
@@ -150,7 +152,7 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
         const imported = await flow.importGroup(ctx.from.id, groupLink);
         pendingGroup.delete(String(ctx.from.id));
         const billed = await flow.bill(ctx.from.id);
-        await ctx.reply(`Storelex cart: ${imported.itemCount} item(s), ${imported.skipped} skipped (ID ${mask}).\nBill:\n${billed.lines.join('\n')}\n${ownerPay ? 'Amount check karke Confirm bill & Pay dabayein.' : 'Pay host par enable nahi hai.'}`, billOptions(ctx.from.id));
+        await ctx.reply(`Storelex cart: ${imported.itemCount} item(s), ${imported.skipped} skipped (ID ${mask}).\nBill:\n${billed.lines.join('\n')}\n${payHint(ctx.from.id)}`, billOptions(ctx.from.id));
       }
     } catch (error) {
       return ctx.reply(`Storelex address/cart/bill abhi verify nahi hua (${error.code || 'CHECK_FAILED'}). /account <mobile> se ID select karke dobara try karein.`);
@@ -164,8 +166,8 @@ export async function main() {
   if (!token || !String(bossId || '').split(/[,;\s]+/).filter(Boolean).every(id => /^\d+$/.test(id)) || !String(bossId || '').trim()) throw new Error('BOT_TOKEN and numeric BOSS_ID/BOSS_IDS are required.');
   const client = createConfiguredStorelexClient();
   const bot = new Telegraf(token);
-  const ownerPay = process.env.STORELEX_OWNER_PAY_TEST === '1'
-    ? createOwnerPay({ client, dataDir: process.env.DATA_DIR }) : null;
+  const { pay: ownerPay, reason: ownerPayReason } = configureOwnerPay(client);
+  console.log(`Storelex owner Pay: ${ownerPayReason}`);
   registerStorelexHandlers(bot, client, bossId, { ownerPay });
   // Fail closed before accepting Telegram updates if the configured remote API
   // cannot authenticate. Never log response bodies or credentials.
