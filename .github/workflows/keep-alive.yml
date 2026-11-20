@@ -1,8 +1,7 @@
 name: 24x7 Render Keep-Alive Cron
 
+# Scheduled pings are disabled while the bot is intentionally shut down.
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
