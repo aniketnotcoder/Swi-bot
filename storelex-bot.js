@@ -98,13 +98,33 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
     if (!isBoss(ctx) || ctx.chat?.type !== 'private') return ctx.reply('Is command ki access nahi hai.');
     try {
       const result = await flow.bill(ctx.from.id);
-      return ctx.reply(`Storelex bill:\n${result.lines.join('\n')}\n${payHint(ctx.from.id)}`, billOptions(ctx.from.id));
+      return ctx.reply(`Storelex bill:\n${result.lines.join('\n')}\n${result.couponStatus}\n${payHint(ctx.from.id)}`, billOptions(ctx.from.id));
     } catch { return ctx.reply('Storelex bill verify nahi hua. Address/cart check karein.'); }
   });
+  const watchTracking = (ctx, draft) => {
+    let checks = 0;
+    const timer = setInterval(async () => {
+      if (++checks > 40) { clearInterval(timer); return; }
+      try {
+        const status = await ownerPay.track(draft);
+        if (status.link) {
+          clearInterval(timer);
+          await ctx.reply(`Storelex tracking: ${status.status}\n${status.link}`);
+        } else if (status.final) {
+          clearInterval(timer);
+          await ctx.reply(`Storelex order status: ${status.status}. Tracking link available nahi hai.`);
+        }
+      } catch { /* transient: /track remains available */ }
+    }, 30_000);
+    timer.unref?.();
+  };
   const sendOwnerQr = async (ctx, amount) => {
     try {
-      const result = await ownerPay(flow.paymentDraft(ctx.from.id), amount);
-      return await ctx.replyWithPhoto({ source: result.png }, { caption: 'Storelex UPI QR. Payment status /paystatus se dekhein. Dobara Pay na karein.' });
+      const draft = flow.paymentDraft(ctx.from.id);
+      const result = await ownerPay(draft, amount);
+      const sent = await ctx.replyWithPhoto({ source: result.png }, { caption: 'Storelex UPI QR. /paystatus se payment, /track se order status dekhein. Tracking link aate hi bot bhejega.' });
+      watchTracking(ctx, draft);
+      return sent;
     } catch { return ctx.reply('Pay incomplete/uncertain. Storelex order list mein check karein; same cart par Pay dobara na karein.'); }
   };
   bot.command('pay', async ctx => {
@@ -117,6 +137,13 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
       const status = await ownerPay.status(flow.paymentDraft(ctx.from.id));
       return ctx.reply(`Storelex payment status: ${status}. ${status === 'PAID' ? 'Provider ne paid confirm kiya.' : 'Paid assume mat karein; Storelex par check karein.'}`);
     } catch { return ctx.reply('Payment status verify nahi hua. Storelex par manually check karein; /pay retry mat karein.'); }
+  });
+  bot.command('track', async ctx => {
+    if (!isBoss(ctx) || ctx.chat?.type !== 'private' || !ownerPay) return ctx.reply('Owner-only tracking unavailable.');
+    try {
+      const result = await ownerPay.track(flow.paymentDraft(ctx.from.id));
+      return ctx.reply(`Storelex order: ${result.status}${result.link ? `\nTracking: ${result.link}` : '\nTracking link abhi nahi aaya.'}`);
+    } catch { return ctx.reply('Storelex tracking verify nahi hua; /recent se order check karein.'); }
   });
   // Explicitly catch stale inline keyboards from previous deployments; never execute them.
   bot.on('callback_query', async ctx => {
@@ -152,7 +179,7 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
         const imported = await flow.importGroup(ctx.from.id, groupLink);
         pendingGroup.delete(String(ctx.from.id));
         const billed = await flow.bill(ctx.from.id);
-        await ctx.reply(`Storelex cart: ${imported.itemCount} item(s), ${imported.skipped} skipped (ID ${mask}).\nBill:\n${billed.lines.join('\n')}\n${payHint(ctx.from.id)}`, billOptions(ctx.from.id));
+        await ctx.reply(`Storelex cart: ${imported.itemCount} item(s), ${imported.skipped} skipped (ID ${mask}).\nBill:\n${billed.lines.join('\n')}\n${billed.couponStatus}\n${payHint(ctx.from.id)}`, billOptions(ctx.from.id));
       }
     } catch (error) {
       return ctx.reply(`Storelex address/cart/bill abhi verify nahi hua (${error.code || 'CHECK_FAILED'}). /account <mobile> se ID select karke dobara try karein.`);
@@ -183,7 +210,7 @@ export async function main() {
   try {
     await bot.telegram.deleteMyCommands();
     await bot.telegram.setChatMenuButton({ type: 'commands' });
-    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'whoami', description: 'Your Telegram numeric ID' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }] : [])]);
+    await bot.telegram.setMyCommands([{ command: 'start', description: 'Storelex mode' }, { command: 'whoami', description: 'Your Telegram numeric ID' }, { command: 'status', description: 'Storelex connection (boss)' }, { command: 'sessions', description: 'Session count (boss)' }, { command: 'cartcheck', description: 'Cart state diagnostic (boss)' }, { command: 'recent', description: 'Recent order count (boss)' }, { command: 'account', description: 'Select Storelex account (boss)' }, { command: 'address', description: 'Verify address link (boss)' }, { command: 'group', description: 'Import group cart (boss)' }, { command: 'bill', description: 'Check repriced bill (boss)' }, ...(ownerPay ? [{ command: 'pay', description: 'Owner UPI test (one attempt)' }, { command: 'paystatus', description: 'Owner payment status' }, { command: 'track', description: 'Owner order tracking' }] : [])]);
     await bot.launch();
     ready = true;
     console.log('Storelex-only Telegram bot active; checkout disabled.');

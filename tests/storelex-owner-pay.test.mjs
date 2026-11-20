@@ -11,10 +11,11 @@ test('only one owner payment attempt per cart, generates provider QR', async () 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'storelex-test-'));
   try {
     let calls = 0;
-    const pay = createOwnerPay({ dataDir: dir, client: { placeOrder: async body => { calls++; assert.equal(body.amount, 349); return { success: true, method: 'upi', order_id: 'o1', txn_id: 't1', upi_url: 'upi://pay?pa=merchant%40upi&am=349&cu=INR' }; }, paymentStatus: async body => { assert.equal(body.order_id, 'o1'); return { success: true, paid: false, unknown: true }; } } });
+    const pay = createOwnerPay({ dataDir: dir, client: { placeOrder: async body => { calls++; assert.equal(body.amount, 349); return { success: true, method: 'upi', order_id: 'o1', txn_id: 't1', upi_url: 'upi://pay?pa=merchant%40upi&am=349&cu=INR' }; }, paymentStatus: async body => { assert.equal(body.order_id, 'o1'); return { success: true, paid: false, unknown: true }; }, orderStatus: async body => { assert.equal(body.order_id, 'o1'); return { success: true, status: 'Out for delivery', tracking_link: 'https://www.swiggy.com/track/order-1', final: false }; } } });
     const first = await pay(draft(), '349');
     assert.equal(first.png.subarray(0, 4).toString('hex'), '89504e47');
     assert.equal(await pay.status(draft()), 'PENDING_OR_UNKNOWN');
+    assert.equal((await pay.track(draft())).link, 'https://www.swiggy.com/track/order-1');
     await assert.rejects(pay(draft(), '349'));
     assert.equal(calls, 1);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }

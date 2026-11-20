@@ -64,8 +64,32 @@ export function createStorelexFlow(client) {
       if (!draft?.imported || !draft.address) throw new Error('Import cart and verify address first');
       const response = await client.repriceCart({ mobile: draft.mobile, restaurant: draft.imported.restaurant, items: draft.imported.items, address_id: draft.address.id, lat: draft.address.lat, lng: draft.address.lng, incognito: true, plan_id: '' });
       if (!success(response) || !id(response.cart_id) || !response.bill || !Array.isArray(response.bill_lines) || !response.bill_lines.length) throw new Error('Bill not verified by Storelex');
-      draft.bill = { cartId: id(response.cart_id), cartValue: response.cart_value, lines: response.bill_lines, coupon: response.coupon, at: Date.now(), nonce: crypto.randomBytes(12).toString('hex') };
-      return { verified: true, lineCount: response.bill_lines.length, cartIdAvailable: true, lines: response.bill_lines.map(line => `${String(line.label || '').slice(0, 50)}: ${String(line.value ?? '').slice(0, 40)}`).slice(0, 15) };
+      let final = response;
+      let couponStatus = 'Coupon verified nahi hua';
+      if (typeof client.bestCoupon === 'function' && typeof response.cart_value === 'number' && response.cart_value > 0) {
+        try {
+          const best = await client.bestCoupon({ mobile: draft.mobile, cart_id: response.cart_id, address_id: draft.address.id,
+            lat: draft.address.lat, lng: draft.address.lng, restaurant_id: draft.imported.restaurant.id, cart_value: response.cart_value });
+          if (success(best)) {
+            // A successful apply response is not proof of a lower final bill. Read
+            // the provider's cart again and accept only its fresh verified bill.
+            const reread = await client.repriceCart({ mobile: draft.mobile, restaurant: draft.imported.restaurant,
+              items: draft.imported.items, address_id: draft.address.id, lat: draft.address.lat, lng: draft.address.lng, incognito: true, plan_id: '' });
+            if (success(reread) && id(reread.cart_id) && reread.bill && Array.isArray(reread.bill_lines) && reread.bill_lines.length) {
+              final = reread;
+              const applied = reread.coupon;
+              if (applied?.valid === true && id(applied.code) && Number(applied.discount) > 0 &&
+                reread.bill_lines.some(line => line.negative === true || /coupon|discount/i.test(String(line.key || line.label || '')))) {
+                couponStatus = `Coupon ${String(applied.code).slice(0, 24)} applied, Storelex bill se verified`;
+              }
+            }
+          }
+        } catch { /* An unavailable coupon must not create a fictitious discount. */ }
+      }
+      draft.bill = { cartId: id(final.cart_id), cartValue: final.cart_value, lines: final.bill_lines, coupon: final.coupon,
+        couponStatus, at: Date.now(), nonce: crypto.randomBytes(12).toString('hex') };
+      return { verified: true, lineCount: final.bill_lines.length, cartIdAvailable: true, couponStatus,
+        lines: final.bill_lines.map(line => `${String(line.label || '').slice(0, 50)}: ${String(line.value ?? '').slice(0, 40)}`).slice(0, 15) };
     },
     paymentDraft(userId) {
       return drafts.get(String(userId));
