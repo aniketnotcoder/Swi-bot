@@ -1,10 +1,13 @@
 const tg = window.Telegram?.WebApp;
 tg?.ready(); tg?.expand();
+let webCsrf = null;
 const main = document.querySelector('#main');
 const notice = document.querySelector('#notice');
 const nav = document.querySelector('#nav');
 const chip = document.querySelector('#accountChip');
-const state = { tab:'accounts', scratch:null, sessions:[], addresses:[], restaurant:null, items:[], cart:null, bill:null, result:null, polling:false };
+const state = { tab:'dashboard', scratch:null, sessions:[], addresses:[], restaurant:null, items:[], cart:null, bill:null, result:null, polling:false, wallet:null, maintenance:null };
+try { document.body.dataset.theme = localStorage.getItem('storelex-theme') === 'light' ? 'light' : 'dark'; }
+catch { document.body.dataset.theme = 'dark'; }
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const price = paise => Number.isFinite(Number(paise)) ? `₹${(Number(paise)/100).toFixed(2)}` : '—';
 const label = (name, input) => `<label>${esc(name)}</label>${input}`;
@@ -14,8 +17,11 @@ const card = (title, content) => `<section class="card"><h2>${esc(title)}</h2>${
 const button = (label, action, extra='') => `<button data-action="${action}" ${extra}>${esc(label)}</button>`;
 const flash = (message, bad=false) => { notice.textContent = message; notice.className = bad?'error':''; setTimeout(()=>{ if(notice.textContent===message) notice.textContent=''; },6500); };
 async function api(action, body={}) {
-  if (!tg?.initData) throw new Error('Open this Mini App inside Telegram.');
-  const response = await fetch('/storelex/api',{method:'POST',headers:{'Content-Type':'application/json','x-telegram-init-data':tg.initData},body:JSON.stringify({action,body})});
+  if (!tg?.initData && !webCsrf) throw new Error('Sign in with your own Storelex key first.');
+  const headers = {'Content-Type':'application/json'};
+  if(tg?.initData)headers['x-telegram-init-data']=tg.initData;
+  else headers['x-csrf-token']=webCsrf;
+  const response = await fetch('/storelex/api',{method:'POST',headers,credentials:'same-origin',body:JSON.stringify({action,body})});
   const data = await response.json();
   if(!response.ok || data?.error) throw new Error(data?.error || `Request failed (${response.status})`);
   return data;
@@ -26,16 +32,33 @@ async function refreshState(){ const result=await api('state'); state.scratch=re
 const requireAccount=()=>state.scratch?.mobile ? '' : card('Select an account','Go to Accounts and pick a saved session first.');
 function render(){
   if (!state.scratch) return;
+  if (state.tab==='dashboard') return renderDashboard();
   if (state.tab==='accounts') return renderAccounts();
+  if (state.tab==='wallet') return renderWallet();
+  if (state.tab==='settings') return renderSettings();
+  if (state.tab==='help') return renderHelp();
   if (!state.scratch.mobile) {main.innerHTML=requireAccount();return;}
+  if (state.tab==='offers') return renderOffers();
   if (state.tab==='addresses') return renderAddresses();
   if (state.tab==='explore') return renderExplore();
   if (state.tab==='cart') return renderCart();
   if (state.tab==='checkout') return renderCheckout();
   if (state.tab==='orders') return renderOrders();
 }
+function renderDashboard(){
+  const sessions=state.sessions, fresh=sessions.filter(s=>!s.is_done&&!s.is_expired).length, used=sessions.filter(s=>s.is_done).length, expired=sessions.filter(s=>s.is_expired).length;
+  const orders=sessions.every(s=>s.orders_count != null && Number.isFinite(Number(s.orders_count)))?sessions.reduce((n,s)=>n+Number(s.orders_count),0):'—';
+  main.innerHTML=card('Your workspace',`<div class="grid"><div class="item">Accounts<div class="big accent">${sessions.length}</div></div><div class="item">Fresh<div class="big accent">${fresh}</div></div><div class="item">Used<div class="big accent">${used}</div></div><div class="item">Expired<div class="big accent">${expired}</div></div><div class="item">Orders reported by sessions<div class="big accent">${orders}</div></div><div class="item">Wallet<div class="big accent">${state.wallet?`₹${esc(state.wallet.balance)}`:'—'}</div></div></div><p class="muted">Counts are calculated from live /sessions; no estimated orders are shown.</p>${button('Refresh live data','dashboardRefresh')}`)+card('Quick actions',button('Choose account','tabAccounts','class="secondary"')+button('Find food','tabExplore','class="secondary"')+button('View orders','tabOrders','class="secondary"'));
+}
+function renderWallet(){const wallet=state.wallet;main.innerHTML=card('Storelex wallet',button('Refresh wallet','walletRefresh')+(wallet?`<p class="big accent">₹${esc(wallet.balance)}</p><p>Order fee: ₹${esc(wallet.fee)} · Minimum deposit: ₹${esc(wallet.min_deposit)}</p><p class="muted">Balance and fees are read from Storelex /me. Deposits and fee edits are not exposed by the documented API.</p>`:'<p class="muted">Refresh for your live balance.</p>'));}
+function renderSettings(){main.innerHTML=card('Appearance',`<p>Current theme: ${document.body.dataset.theme==='light'?'Light':'Dark'}</p>${button('Switch light / dark','themeToggle')}`)+card('Account & privacy',`<p class="muted">Account removal is disabled for everyone in this application.</p>${!tg?.initData?button('Sign out','webLogout','class="secondary"'):''}`);}
+function renderHelp(){main.innerHTML=card('Help & support',`<p>Choose an account, select an address, find a restaurant, review the freshly repriced bill and confirm payment. A QR or placement ID does not mean an order is paid.</p><p class="muted">If a payment is unknown, do not place the same cart again. Check order status with the provider or contact your Storelex operator. No support-ticket API is documented.</p>`);}
+function renderOffers(){main.innerHTML=card('Offers for this cart',`<p class="muted">A selected address and repriced cart are required. Only a provider-verified bill shows a real discount.</p>${button('Load coupons','offersLoad')}${button('Apply best coupon','offersBest','class="secondary"')}<div id="offerList"></div>`);}
+function renderLogin(){
+  main.innerHTML=card('Secure Storelex sign in',`<p class="muted">Use your own Storelex access key. The key is sent over HTTPS to this server, never put in a URL or browser storage. Sessions expire after 12 hours.</p>${field('Your access key','webKey','password','SWG-... or TNG-...')}${button('Sign in','webLogin')}`);
+}
 function renderAccounts(){
-  main.innerHTML=card('Saved accounts',button('Refresh sessions','sessions')+`<div class="list">${state.sessions.map(s=>`<div class="item ${state.scratch.mobile===s.mobile?'selected':''}"><strong>${esc(s.name||'Swiggy ID')}</strong><p class="muted">••••${esc(String(s.mobile||'').slice(-4))} · ${esc(s.is_expired?'Expired':s.status||'Active')} · ${esc(s.orders_count??0)} orders</p>${button('Select','select',`data-mobile="${esc(s.mobile)}"`)} ${button('Free cash','freecash',`class="secondary" data-mobile="${esc(s.mobile)}"`)} ${button('Export','export',`class="secondary" data-mobile="${esc(s.mobile)}"`)} ${s.key_login?button('Login key','loginkey',`class="secondary" data-mobile="${esc(s.mobile)}"`):''}</div>`).join('')}</div>`)+card('Account controls',`<p class="muted">Removing all saved accounts affects your Storelex key. Swiggy accounts themselves are not deleted.</p>${button('Remove all accounts','removeall','class="danger"')}`);
+  main.innerHTML=(!tg?.initData ? card('Web session',button('Sign out','webLogout','class="secondary"')) : '')+card('Saved accounts',button('Refresh sessions','sessions')+`<div class="list">${state.sessions.map(s=>`<div class="item ${state.scratch.mobile===s.mobile?'selected':''}"><strong>${esc(s.name||'Swiggy ID')}</strong><p class="muted">••••${esc(String(s.mobile||'').slice(-4))} · ${esc(s.is_expired?'Expired':s.status||'Active')} · ${esc(s.orders_count??0)} orders</p>${button('Select','select',`data-mobile="${esc(s.mobile)}"`)} ${button('Free cash','freecash',`class="secondary" data-mobile="${esc(s.mobile)}"`)} ${button('Export','export',`class="secondary" data-mobile="${esc(s.mobile)}"`)} ${s.key_login?button('Login key','loginkey',`class="secondary" data-mobile="${esc(s.mobile)}"`):''}</div>`).join('')}</div>`);
 }
 function renderAddresses(){
   main.innerHTML=card('Selected account addresses',button('Refresh addresses','addresses')+`<div class="list">${state.addresses.map(a=>`<div class="item ${String(state.scratch.address_id)===String(a.id)?'selected':''}"><strong>${esc(a.annotation||a.name||'Address')}</strong><p>${esc(a.formatted_address||a.house||a.area||'')}</p><small>${esc(a.receiver_mobile||'')}</small><div class="row">${button('Deliver here','addressSelect',`data-id="${esc(a.id)}"`)}${button('Sync to account','addressSync',`class="secondary" data-id="${esc(a.id)}"`)}${button('Delete','addressDelete',`class="danger" data-id="${esc(a.id)}" data-global="${a.is_global===true}"`)}</div></div>`).join('')}</div>`)+card('Add by Swiggy link',field('Address share link','addressLink','url','https://swiggy.onelink.me/...')+button('Add link','addressLinkAdd'))+card('Add manual address',field('House / flat','house')+field('Area','area')+field('Name','receiver')+field('Receiver mobile','receiverMobile','tel')+`<div class="grid">${field('Latitude','lat','number')}${field('Longitude','lng','number')}</div>`+field('Formatted address','formatted')+button('Save address','addressAdd'))+card('Location tools',field('Search place','placeSearch')+button('Search','locationSearch')+field('Place ID','placeId')+button('Details','locationDetails','class="secondary"')+button('Reverse selected coordinates','locationReverse','class="secondary"'));
@@ -86,6 +109,23 @@ nav.addEventListener('click',e=>{const tab=e.target.closest('[data-tab]')?.datas
 main.addEventListener('click',event=>run(async()=>{
   const button=event.target.closest('[data-action]');if(!button)return;
   const action=button.dataset.action;
+  if(action==='webLogin'){
+    const response=await fetch('/storelex/web/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({access_key:value('webKey')})});
+    const result=await response.json();if(!response.ok)throw new Error(result.error||'Login failed');
+    webCsrf=result.csrf;await refreshState();return loadSessions();
+  }
+  if(action==='webLogout'){
+    await fetch('/storelex/web/logout',{method:'POST',headers:{'x-csrf-token':webCsrf},credentials:'same-origin'});
+    webCsrf=null;state.scratch=null;state.sessions=[];return renderLogin();
+  }
+  if(action==='themeToggle'){document.body.dataset.theme=document.body.dataset.theme==='light'?'dark':'light';try{localStorage.setItem('storelex-theme',document.body.dataset.theme);}catch{}render();return;}
+  if(action==='tabAccounts')return setTab('accounts');
+  if(action==='tabExplore')return setTab('explore');
+  if(action==='tabOrders')return setTab('orders');
+  if(action==='dashboardRefresh'){await loadSessions();state.wallet=await api('me');state.maintenance=await api('maintenance');render();return;}
+  if(action==='walletRefresh'){state.wallet=await api('me');render();return;}
+  if(action==='offersLoad'){const result=await api('coupons');showResult('#offerList',`<div class="list">${(result.coupons||[]).map(c=>`<div class="item">${esc(c.code)} · ${esc(c.title||'')} · ${c.applicable?'Applicable':'Not applicable'}</div>`).join('')}</div>`);return;}
+  if(action==='offersBest'){await api('bestCoupon');await reprice();return setTab('cart');}
   if(action==='sessions')return loadSessions();
   if(action==='select'){await api('selectAccount',{mobile:button.dataset.mobile});await refreshState();state.items=[];state.cart=null;state.restaurant=null;setTab('addresses');return loadAddresses();}
   if(action==='freecash'||action==='export'||action==='loginkey'){
@@ -95,7 +135,6 @@ main.addEventListener('click',event=>run(async()=>{
     else flash(action==='loginkey'?`Login key: ${result.login_key||'unavailable'}`:`Free cash: ${JSON.stringify(result.fc||result)}`);
     return;
   }
-  if(action==='removeall'){if(!window.confirm('Remove ALL saved accounts from Storelex?'))return;await api('removeAllAccounts',{confirm:'REMOVE ALL'});await refreshState();return loadSessions();}
   if(action==='addresses')return loadAddresses();
   if(action==='addressSelect'){await api('selectAddress',{address_id:button.dataset.id});await refreshState();return render();}
   if(action==='addressSync'){const selected=state.addresses.find(a=>String(a.id)===button.dataset.id);if(!selected)throw new Error('Address not selected');await api('addAddressToAccount',{address:selected});return loadAddresses();}
@@ -150,4 +189,11 @@ main.addEventListener('click',event=>run(async()=>{
   if(action==='orderDetail'){const result=await api('orderDetail',{order_id:button.dataset.id});showResult('#orderList',card('Order detail',`<pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify(result,null,2))}</pre>`));return;}
   if(action==='rateOrder'){if(!window.confirm('Rate restaurant and delivery partner 5 stars?'))return;await api('rateOrder',{order_id:button.dataset.id});flash('Rating sent');return;}
 }));
-run(async()=>{await refreshState();await loadSessions();});
+run(async()=>{
+  if(!tg?.initData){
+    const session=await fetch('/storelex/web/session',{credentials:'same-origin'});
+    if(!session.ok){renderLogin();return;}
+    webCsrf=(await session.json()).csrf;
+  }
+  await refreshState();await loadSessions();
+});
