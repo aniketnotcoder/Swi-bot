@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import { Telegraf, Markup } from 'telegraf';
 import { handleSwiggyProHttp } from './swiggy-pro-api.js';
 import { getProVaultSource } from './swiggy-pro-store.js';
+import { installTelegramVoiceReplies, toggleVoiceTone } from './voice-replies.js';
 import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { logThrottled, startMemoryGuard, perfSnapshot } from './perf-guard.js';
 import { EVENT_OFFER_LINKS, activateAllEventOffers } from './event-offers.js';
@@ -451,6 +452,13 @@ try {
     }
   };
 } catch {}
+
+// Private customer chat gets a fixed Hindi voice note alongside text.
+// Voice clips are local assets; Boss/admin and group chats are excluded.
+const voiceReplyRuntime = installTelegramVoiceReplies(bot.telegram, {
+  isBoss,
+  logger: IS_OFFLINE_TEST ? { info() {}, warn() {} } : console
+});
 
 // ================= MANDATORY CHANNEL SUBSCRIPTION GATE & SERVICE PAUSE =================
 // Requires all non-boss users to join @its_NoooB before using any bot features.
@@ -2541,6 +2549,22 @@ bot.start(async (ctx) => {
       console.error('[START] fallback reply failed:', e2?.message || e2);
     }
   }
+});
+
+// Voice mood switch: /voice toggles normal and mildly stern delivery.
+// Google TTS has no true anger control; stern mode is assertive prosody only,
+// never insults or threats.
+bot.command('voice', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  const tone = toggleVoiceTone(userId);
+  if (!voiceReplyRuntime.enabled) {
+    return ctx.reply('Voice abhi setup nahi hai — admin ko TTS enable karna hoga.').catch(() => {});
+  }
+  const text = tone === 'stern'
+    ? 'Theek hai, ab voice thodi sakht rahegi. Gaali ya beizzati nahi, bas seedhi baat.'
+    : 'Theek hai, normal voice wapas on.';
+  await ctx.reply(text).catch(() => {});
 });
 
 // Set an explicit HTTPS Mini App origin rather than trusting request Host
