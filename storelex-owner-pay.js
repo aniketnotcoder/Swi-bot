@@ -21,14 +21,18 @@ export function createOwnerPay({ client, dataDir }) {
     if (record.state !== 'QR_ISSUED' || !record.orderId || !record.txnId) throw new Error('Placement unresolved; check Storelex manually');
     const response = await client.paymentStatus({ mobile: draft.mobile, cart_id: draft.bill.cartId, address_id: draft.address.id, order_id: record.orderId, txn_id: record.txnId, method: 'upi', manual: false, deep: false });
     if (response?.success !== true) throw new Error('Payment status unverified');
-    return response.paid === true ? 'PAID' : response.failed === true || response.order_failed === true ? 'FAILED' : 'PENDING_OR_UNKNOWN';
+    if (response.failed === true || response.order_failed === true || response.inconclusive === true || response.unknown === true) return 'PENDING_OR_UNKNOWN';
+    return response.paid === true ? 'PAID' : 'PENDING_OR_UNKNOWN';
   }
   async function tracking(draft) {
     if (!draft?.mobile || !draft?.bill?.cartId) throw new Error('No selected cart');
+    if (await paymentStatus(draft) !== 'PAID') return { status: 'Payment not confirmed', link: null, final: false };
     const record = JSON.parse(await fs.readFile(journalFile(draft), 'utf8'));
     if (record.state !== 'QR_ISSUED' || !record.orderId) throw new Error('Order not confirmed');
     const response = await client.orderStatus({ order_id: record.orderId });
-    if (response?.success !== true) throw new Error('Tracking unavailable');
+    if (response?.success !== true || !response.status || /pending|unconfirmed|failed|cancel|unknown/i.test(String(response.status))) {
+      return { status: 'Order not confirmed', link: null, final: false };
+    }
     let link = null;
     if (typeof response.tracking_link === 'string') {
       try {
@@ -41,9 +45,13 @@ export function createOwnerPay({ client, dataDir }) {
   }
   async function receipt(draft) {
     if (!draft?.mobile || !draft?.bill?.cartId) throw new Error('No selected cart');
+    if (await paymentStatus(draft) !== 'PAID') throw new Error('Payment not confirmed');
     const record = JSON.parse(await fs.readFile(journalFile(draft), 'utf8'));
     if (record.state !== 'QR_ISSUED' || !record.orderId) throw new Error('Order not confirmed');
     const detail = await client.orderDetail(draft.mobile, record.orderId);
+    const returned = detail?.order && typeof detail.order === 'object' ? detail.order : detail;
+    if (detail?.success !== true || String(returned?.order_id || '') !== record.orderId ||
+      (!returned?.order_status && !returned?.status)) throw new Error('Order detail not confirmed');
     return formatStorelexReceipt(detail, draft.mobile);
   }
   async function pay(draft, enteredAmount) {

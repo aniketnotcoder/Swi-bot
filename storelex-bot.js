@@ -109,7 +109,8 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
         const status = await ownerPay.track(draft);
         if (status.link) {
           clearInterval(timer);
-          await ctx.reply(`Storelex tracking: ${status.status}\n${status.link}`);
+          try { await ctx.reply(await ownerPay.receipt(draft)); }
+          catch { await ctx.reply(`Storelex paid order status: ${status.status}\nTracking: ${status.link}\nFull receipt abhi verify nahi hua.`); }
         } else if (status.final) {
           clearInterval(timer);
           await ctx.reply(`Storelex order status: ${status.status}. Tracking link available nahi hai.`);
@@ -123,7 +124,7 @@ export function registerStorelexHandlers(bot, client, bossId, { ownerPay = null 
       const draft = flow.paymentDraft(ctx.from.id);
       const result = await ownerPay(draft, amount);
       const sent = await ctx.replyWithPhoto({ source: result.png }, { caption: 'Storelex UPI QR. /paystatus se payment, /track se order status dekhein. Tracking link aate hi bot bhejega.' });
-      try { await ctx.reply(await ownerPay.receipt(draft)); } catch { await ctx.reply('Order detail Storelex par abhi pending hai. /receipt se dobara check karein.'); }
+      await ctx.reply('QR payment request hai, order confirmation nahi. Payment verify hone ke baad hi receipt/tracking bhejunga.');
       watchTracking(ctx, draft);
       return sent;
     } catch { return ctx.reply('Pay incomplete/uncertain. Storelex order list mein check karein; same cart par Pay dobara na karein.'); }
