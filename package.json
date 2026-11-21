@@ -26,6 +26,7 @@
     "test:round34": "node test_v123_round34_bill_faster_pay_window.mjs",
     "test:round35": "node test_v124_round35_cancel_and_consistent_bill.mjs",
     "test:storelex-api": "node --test storelex-api.test.mjs",
+    "test:vercel-chat": "node --test tests/vercel-chat.test.mjs",
     "test:voice-replies": "node --test voice-replies.test.mjs",
     "preview:miniapp": "node preview-miniapp.mjs",
     "shots:miniapp": "node tools/screenshot-miniapp.mjs",

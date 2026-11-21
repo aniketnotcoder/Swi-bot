@@ -39,7 +39,7 @@ function encodePathSegment(value) {
  */
 export function createStorelexClient({
   baseUrl = process.env.STORELEX_API_BASE_URL || DEFAULT_BASE_URL,
-  userKey = process.env.STORELEX_USER_KEY || '',
+  userKey = process.env.STORELEX_USER_KEY || process.env.STORELEX_KEY || '',
   fetchImpl = globalThis.fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS
 } = {}) {
@@ -141,7 +141,7 @@ export function createStorelexClient({
     importSessionJson: body => post('/auth/import_json', body),
     loginByKey: keyValue => post('/login/json', { json_data: keyValue }),
     addresses: (mobile, { force = false } = {}) => get(`/addresses/${encodePathSegment(mobile)}`, { force }),
-    addAddress: body => post('/addresses/add', body),
+    addAddress: (body, options = {}) => post('/addresses/add', body, options),
     addAddressByLink: body => post('/addresses/add_link', body),
     deleteAddress: body => del('/addresses/delete', body),
     locationSearch: query => get('/location/search', { query }),
@@ -157,8 +157,10 @@ export function createStorelexClient({
     setCartState: body => put('/cart/state', body),
     repriceCart: body => post('/search/cart', body),
     addAddressToAccount: body => post('/cart/add_address_to_account', body),
-    resolveAddressByLink: body => post('/cart/address_by_link', body),
-    importGroupCart: body => post('/cart/import_group', body),
+    resolveAddressByLink: (body, options = {}) => post('/cart/address_by_link', body, { timeoutMs: options.timeoutMs ?? 45_000 }),
+    importGroupCart: (body, options = {}) => post('/cart/import_group', body, {
+      timeoutMs: options.timeoutMs ?? (body?.leave_old === true ? 45_000 : 30_000)
+    }),
     coupons: body => post('/checkout/coupons', body),
     bestCoupon: body => post('/checkout/best_coupon', body),
     applyCoupon: body => post('/checkout/apply_coupon', body),

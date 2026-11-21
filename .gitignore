@@ -1,5 +1,6 @@
 node_modules/
 .env
+.env.local
 .DS_Store
 *.log
 *.png
@@ -58,6 +59,7 @@ checkout_*.mjs
 *.json
 !package.json
 !package-lock.json
+!vercel.json
 !data/db.example.json
 # `accounts.json` is a LIVE session mirror (cookies/tids) — runtime file only,
 # NEVER committed (was a public leak; vault-at-rest encryption + bot-vault branch

@@ -8279,17 +8279,20 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     };
   }
 
-  const chosenKey = selectSingleBillAccount(allEntries, {
-    selectedKey: order?.selectedAccount,
-    activeKey: db.config?.activeOrderAccount,
-    excludedKeys: Array.isArray(excludeAccountKeys) ? excludeAccountKeys : [],
-    busyKeys: [...getBusySwiggyAccountsMap(db, orderId).keys()]
-  });
-  if (!chosenKey) {
-    return { success: false, code: 'SELECTED_ACCOUNT_UNAVAILABLE', error: 'Selected Swiggy ID unavailable or busy. Doosri ID manually select karein.' };
+  const explicitlySelectedKey = String(order?.selectedAccount || '');
+  if (explicitlySelectedKey) {
+    const chosenKey = selectSingleBillAccount(allEntries, {
+      selectedKey: explicitlySelectedKey,
+      excludedKeys: Array.isArray(excludeAccountKeys) ? excludeAccountKeys : [],
+      busyKeys: [...getBusySwiggyAccountsMap(db, orderId).keys()]
+    });
+    if (!chosenKey) {
+      return { success: false, code: 'SELECTED_ACCOUNT_UNAVAILABLE', error: 'Selected Swiggy ID unavailable or busy. Doosri ID manually select karein.' };
+    }
+    // An explicit per-order account choice is a hard constraint; automatic mode below
+    // compares the eligible pool without letting a stale global activeAccount pin it.
+    allEntries = allEntries.filter(([key]) => key === chosenKey);
   }
-  // All subsequent history, cart and offer checks use only this account.
-  allEntries = allEntries.filter(([key]) => key === chosenKey);
 
   // Inspect logged-in accounts with bounded concurrency (6 workers) so Vault scans stay <1s
   // without firing a 30-way simultaneous burst that trips Swiggy's AWS WAF!
@@ -8328,7 +8331,6 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     }
     validPool = profilesList.filter(x => x.profile.valid && !x.acc?.sessionExpired && !x.acc?.isLoggedOut);
   }
-
   if (validPool.length === 0) {
     const expiredPhones = profilesList.map(x => x.acc.phone || x.key).filter(Boolean);
     const softCount = profilesList.filter(x => x.profile?.softFail === true).length;

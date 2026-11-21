@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "api/telegram.js": { "maxDuration": 60 },
+    "api/payment-poll.js": { "maxDuration": 60 }
+  }
+}

@@ -9,7 +9,7 @@ const fakeResponse = (payload, status = 200) => ({
   json: async () => payload
 });
 
- test('adds x-user-key without exposing it in the URL and parses authenticated GET', async () => {
+test('adds x-user-key without exposing it in the URL and parses authenticated GET', async () => {
   let seen;
   const client = createStorelexClient({
     baseUrl: BASE,
@@ -42,6 +42,42 @@ test('serializes JSON bodies and URL-encodes account path segments', async () =>
   assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
   assert.deepEqual(JSON.parse(calls[0].options.body), { mobile: '98/76543210' });
   assert.equal(calls[1].url, `${BASE}/addresses/98%2F76543210?force=true`);
+});
+
+test('manual address add and optional address-link import use separate endpoints and exact request shapes', async () => {
+  const calls = [];
+  const client = createStorelexClient({
+    baseUrl: BASE, userKey: 'TEST-KEY',
+    fetchImpl: async (url, options) => { calls.push({ url: String(url), options }); return fakeResponse({ success: true, address: { id: 'a1' } }); }
+  });
+  const addBody = { mobile: '9876543210', lat: '26.8', lng: '80.9', name: 'Receiver', receiver_mobile: '9123456789' };
+  await client.addAddress(addBody, { timeoutMs: 45_000 });
+  await client.resolveAddressByLink({ mobile: '9876543210', link: 'https://www.swiggy.com/ofo/address/abc' }, { timeoutMs: 45_000 });
+  assert.equal(calls[0].url, `${BASE}/addresses/add`);
+  assert.deepEqual(JSON.parse(calls[0].options.body), addBody);
+  assert.equal(calls[1].url, `${BASE}/cart/address_by_link`);
+  assert.deepEqual(JSON.parse(calls[1].options.body), { mobile: '9876543210', link: 'https://www.swiggy.com/ofo/address/abc' });
+  assert.equal(calls[0].options.signal.aborted, false);
+  assert.equal(calls[1].options.signal.aborted, false);
+});
+
+test('group import uses the documented endpoint/body and x-user-key header', async () => {
+  const calls = [];
+  const client = createStorelexClient({
+    baseUrl: BASE,
+    userKey: 'TEST-KEY',
+    fetchImpl: async (url, options) => {
+      calls.push({ url: String(url), options });
+      return fakeResponse({ success: false, already_in_group: true });
+    }
+  });
+  await client.importGroupCart({ mobile: '9876543210', leave_old: false });
+  await client.importGroupCart({ mobile: '9876543210', leave_old: true });
+  assert.equal(calls[0].url, `${BASE}/cart/import_group`);
+  assert.equal(calls[0].options.headers['x-user-key'], 'TEST-KEY');
+  assert.deepEqual(JSON.parse(calls[0].options.body), { mobile: '9876543210', leave_old: false });
+  assert.equal(calls[0].options.signal.aborted, false);
+  assert.equal(calls[1].options.signal.aborted, false);
 });
 
 test('supports bodies on DELETE and long payment calls without exceeding 60s', async () => {
