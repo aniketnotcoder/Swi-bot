@@ -15,8 +15,8 @@
 
 import { isBoss } from './store.js';
 
-export const REQUIRED_CHANNEL = '@its_NoooB';
-export const REQUIRED_CHANNEL_URL = 'https://t.me/its_NoooB';
+export const REQUIRED_CHANNEL = '@zigada';
+export const REQUIRED_CHANNEL_URL = 'https://t.me/zigada';
 
 // In-memory cache for user channel verification: userId -> { isMember: boolean, reason?: string, expiresAt: number }
 const memberCache = new Map();
